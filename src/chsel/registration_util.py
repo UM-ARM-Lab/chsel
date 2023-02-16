@@ -4,8 +4,7 @@ from typing import Optional
 import torch
 from matplotlib import pyplot as plt, cm as cm
 from ribs.visualize import grid_archive_heatmap
-from pytorch3d.ops import utils as oputil
-from pytorch3d.ops.points_alignment import SimilarityTransform
+from chsel.types import SimilarityTransform
 
 from base_experiments import cfg
 
@@ -94,7 +93,7 @@ def apply_init_transform(Xt, init_transform: Optional[SimilarityTransform] = Non
         Xt = apply_similarity_transform(Xt, R, T, s)
     else:
         # initialize the transformation with identity
-        R = oputil.eyes(dim, b, device=Xt.device, dtype=Xt.dtype)
+        R = torch.eye(dim, device=Xt.device, dtype=Xt.dtype).repeat(b, 1, 1)
         T = Xt.new_zeros((b, dim))
         s = Xt.new_ones(b)
     return Xt, R, T, s

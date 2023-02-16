@@ -8,13 +8,12 @@ import numpy as np
 import torch
 from arm_pytorch_utilities.tensor_utils import ensure_tensor
 
-from pytorch3d.ops import utils as oputil
-from pytorch3d.ops.points_alignment import SimilarityTransform, ICPSolution
 from pytorch_kinematics import matrix_to_rotation_6d, rotation_6d_to_matrix
 from ribs.archives import GridArchive
 from ribs.emitters import EvolutionStrategyEmitter, GradientArborescenceEmitter
 from ribs.schedulers import Scheduler
 from chsel.costs import RegistrationCost
+from chsel.types import SimilarityTransform, ICPSolution
 from chsel.registration_util import plot_poke_losses, plot_qd_archive, apply_init_transform
 
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ class QDOptimization:
                  save_loss_plot=False, **kwargs):
         self.registration_cost = registration_cost
         self.X = model_points_world_frame
-        self.Xt, self.num_points_X = oputil.convert_pointclouds_to_tensor(self.X)
+        self.Xt = self.X
         self.B = self.Xt.shape[0]
 
         self.init_transform = init_transform
@@ -60,9 +59,6 @@ class QDOptimization:
             losses.append(cost)
 
         R, T, rmse = self.process_final_results(None, losses)
-
-        if oputil.is_pointclouds(self.X):
-            Xt = X.update_padded(Xt)  # type: ignore
 
         return ICPSolution(True, rmse, Xt, SimilarityTransform(R, T, s), t_history)
 

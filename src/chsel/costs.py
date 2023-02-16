@@ -1,7 +1,5 @@
 import matplotlib.colors, matplotlib.cm
 import torch
-from torch.nn import MSELoss
-from pytorch3d.ops.knn import knn_gather, _KNN
 
 import pytorch_volumetric.sdf
 from pytorch_volumetric import voxel
@@ -10,7 +8,7 @@ from typing import Any
 
 
 class RegistrationCost:
-    def __call__(self, R, T, s, knn_res: _KNN = None):
+    def __call__(self, R, T, s, other_info=None):
         """Cost for given pose guesses of ICP
 
         :param R: B x 3 x 3
@@ -30,21 +28,6 @@ class ComposeCost(RegistrationCost):
 
     def __call__(self, *args, **kwargs):
         return sum(cost(*args, **kwargs) for cost in self.costs)
-
-
-class SurfaceNormalCost(RegistrationCost):
-    """Cost of matching the surface normals at corresponding points"""
-
-    def __init__(self, Xnorm, Ynorm, scale=1.):
-        self.Xnorm = Xnorm
-        self.Ynorm = Ynorm
-        self.loss = MSELoss()
-        self.scale = scale
-
-    def __call__(self, R, T, s, knn_res: _KNN = None):
-        corresponding_ynorm = knn_gather(self.Ynorm, knn_res.idx).squeeze(-2)
-        transformed_norms = apply_similarity_transform(self.Xnorm, R, s=s)
-        return self.loss(corresponding_ynorm, transformed_norms) * self.scale
 
 
 # Lookup versions of costs do SDF lookups directly which are more expensive but more accurate
@@ -88,7 +71,8 @@ class FreeSpaceLookupCost(torch.autograd.Function):
     interior_threshold = -0.01
 
     @staticmethod
-    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF, model_frame_free_pos: torch.tensor) -> torch.tensor:
+    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF,
+                model_frame_free_pos: torch.tensor) -> torch.tensor:
         definitely_not_violating = sdf.outside_surface(model_frame_free_pos,
                                                        surface_level=FreeSpaceLookupCost.interior_threshold)
         violating = ~definitely_not_violating
@@ -124,7 +108,8 @@ class OccupiedLookupCost(torch.autograd.Function):
     interior_threshold = -0.01
 
     @staticmethod
-    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF, model_frame_occ_pos: torch.tensor) -> torch.tensor:
+    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF,
+                model_frame_occ_pos: torch.tensor) -> torch.tensor:
         violating = sdf.outside_surface(model_frame_occ_pos, surface_level=-FreeSpaceLookupCost.interior_threshold)
         # this full lookup is much, much slower than the cached version with points, but are about equivalent
         sdf_value, sdf_grad = sdf(model_frame_occ_pos[violating])
@@ -220,7 +205,8 @@ class KnownSDFVoxelDiffCost:
 class VolumetricCost(RegistrationCost):
     """Cost of transformed model pose intersecting with known freespace voxels"""
 
-    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels, obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
+    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels,
+                 obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
                  vis=None, scale_known_freespace=1., scale_known_sdf=1.,
                  obj_factory=None,
                  debug=False, debug_known_sgd=False, debug_freespace=False):
@@ -269,7 +255,7 @@ class VolumetricCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
-    def __call__(self, R, T, s, knn_res: _KNN = None):
+    def __call__(self, R, T, s, other_info=None):
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
@@ -423,7 +409,7 @@ class VolumetricCost(RegistrationCost):
 class VolumetricDirectSDFCost(VolumetricCost):
     """Use SDF queries for the known SDF points instead of using cached grads"""
 
-    def __call__(self, R, T, s, knn_res: _KNN = None):
+    def __call__(self, R, T, s, other_info=None):
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
             self.model_interior_points = self.model_interior_points_orig.repeat(self.B, 1, 1)
@@ -457,7 +443,8 @@ class VolumetricDoubleDirectCost(RegistrationCost):
     """Cost of transformed model pose intersecting with known freespace voxels
     (slower than the voxelized version above)"""
 
-    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels, obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
+    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels,
+                 obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
                  vis=None, scale_known_freespace=1., scale_known_sdf=1.,
                  obj_factory=None,
                  debug=False, debug_known_sgd=False, debug_freespace=False):
@@ -505,7 +492,7 @@ class VolumetricDoubleDirectCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
-    def __call__(self, R, T, s, knn_res: _KNN = None):
+    def __call__(self, R, T, s, other_info=None):
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
@@ -537,7 +524,8 @@ class VolumetricDoubleDirectCost(RegistrationCost):
 class DiscreteNondifferentiableCost(RegistrationCost):
     """Flat high cost for any known free space point violations"""
 
-    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels, obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
+    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels,
+                 obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
                  vis=None, cmax=20., penetration_tolerance=0.01,
                  obj_factory=None):
         """
@@ -564,7 +552,7 @@ class DiscreteNondifferentiableCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
-    def __call__(self, R, T, s, knn_res: _KNN = None):
+    def __call__(self, R, T, s, other_info=None):
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]

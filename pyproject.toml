@@ -1,6 +1,6 @@
 [project]
 name = "chsel"
-version = "0.1.0"
+version = "0.1.1"
 description = "Constrained pose Hypothesis Set Elimination official code for pose estimation"
 readme = "README.md" # Optional
 
@@ -57,6 +57,7 @@ dependencies = [# Optional
     'matplotlib',
     'arm-pytorch-utilities',
     'pytorch-kinematics',
+    'ribs[all]'
 ]
 
 # List additional groups of dependencies here (e.g. development
