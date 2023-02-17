@@ -6,21 +6,21 @@ from matplotlib import pyplot as plt, cm as cm
 from ribs.visualize import grid_archive_heatmap
 from chsel.types import SimilarityTransform
 
-from base_experiments import cfg
-
 poke_index = 0
 sgd_index = 0
 
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+
 
 def _savefig(directory, fig, suffix=""):
-    savepath = os.path.join(cfg.DATA_DIR, directory, f"{poke_index}{suffix}.png")
+    savepath = os.path.join(directory, f"{poke_index}{suffix}.png")
     os.makedirs(os.path.dirname(savepath), exist_ok=True)
     plt.savefig(savepath)
     fig.clf()
     plt.close(fig)
 
 
-def plot_poke_losses(losses, directory='img/loss', ylabel='cost', xlabel='iteration', logy=True):
+def plot_poke_losses(losses, savedir=ROOT_DIR, loss_name='loss', ylabel='cost', xlabel='iteration', logy=True):
     global poke_index, sgd_index
     losses = torch.stack(losses).cpu().numpy()
     fig, ax = plt.subplots()
@@ -33,11 +33,11 @@ def plot_poke_losses(losses, directory='img/loss', ylabel='cost', xlabel='iterat
     for b in range(losses.shape[1]):
         c = (b + 1) / losses.shape[1]
         ax.plot(losses[:, b], c=cm.GnBu(c))
-    _savefig(directory, fig)
+    _savefig(os.path.join(savedir, 'img', loss_name), fig)
     sgd_index = 0
 
 
-def plot_qd_archive(archive):
+def plot_qd_archive(archive, savedir=ROOT_DIR):
     global poke_index
     fig, ax = plt.subplots()
     grid_archive_heatmap(archive, ax=ax, vmin=-4, vmax=0)
@@ -46,10 +46,10 @@ def plot_qd_archive(archive):
     ax.set_xlabel('x')
     ax.set_ylabel('y')
     fig.suptitle(f"poke {poke_index} QD: {archive.stats.norm_qd_score}")
-    _savefig('img/qd', fig)
+    _savefig(os.path.join(savedir, 'img/qd'), fig)
 
 
-def plot_sgd_losses(losses):
+def plot_sgd_losses(losses, savedir=ROOT_DIR):
     global poke_index, sgd_index
     losses = torch.stack(losses).cpu().numpy()
     fig, ax = plt.subplots()
@@ -62,7 +62,7 @@ def plot_sgd_losses(losses):
         c = (b + 1) / losses.shape[1]
         ax.plot(losses[:, b], c=cm.PuRd(c))
 
-    _savefig('img/sgd', fig, suffix=f"_{sgd_index}")
+    _savefig(os.path.join(savedir, 'img/sgd'), fig, suffix=f"_{sgd_index}")
     sgd_index += 1
 
 

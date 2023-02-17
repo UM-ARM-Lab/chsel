@@ -14,7 +14,7 @@ from ribs.emitters import EvolutionStrategyEmitter, GradientArborescenceEmitter
 from ribs.schedulers import Scheduler
 from chsel.costs import RegistrationCost
 from chsel.types import SimilarityTransform, ICPSolution
-from chsel.registration_util import plot_poke_losses, plot_qd_archive, apply_init_transform
+from chsel import registration_util
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,9 @@ class QDOptimization:
                  init_transform: Optional[SimilarityTransform] = None,
                  sigma=0.1,
                  num_emitters=5,
-                 save_loss_plot=False, **kwargs):
+                 save_loss_plot=False,
+                 savedir=registration_util.ROOT_DIR,
+                 **kwargs):
         self.registration_cost = registration_cost
         self.X = model_points_world_frame
         self.Xt = self.X
@@ -36,18 +38,19 @@ class QDOptimization:
         self.init_transform = init_transform
         self.sigma = sigma
         self.save_loss_plot = save_loss_plot
+        self.savedir = savedir
 
         self.device = self.Xt.device
         self.dtype = self.Xt.dtype
 
-        Xt, R, T, s = apply_init_transform(self.Xt, self.init_transform)
+        Xt, R, T, s = registration_util.apply_init_transform(self.Xt, self.init_transform)
         x = self.get_numpy_x(R, T)
         self.num_emitters = num_emitters
         self.scheduler = self.create_scheduler(x, **kwargs)
         self.restore_previous_results()
 
     def run(self):
-        Xt, R, T, s = apply_init_transform(self.Xt, self.init_transform)
+        Xt, R, T, s = registration_util.apply_init_transform(self.Xt, self.init_transform)
 
         # initialize the transformation history
         t_history = []
@@ -128,7 +131,7 @@ class CMAES(QDOptimization):
         rmse = self.registration_cost(R, T, s)
 
         if self.save_loss_plot:
-            plot_poke_losses(losses)
+            registration_util.plot_poke_losses(losses, savedir=self.savedir)
 
         return R, T, rmse
 
@@ -242,10 +245,11 @@ class CMAME(QDOptimization):
         rmse = self.registration_cost(R, T, s)
 
         if self.save_loss_plot:
-            plot_poke_losses(losses)
+            registration_util.plot_poke_losses(losses, savedir=self.savedir)
             qd_scores = [torch.tensor(v).view(1) for v in self.qd_scores]
-            plot_poke_losses(qd_scores, directory='img/qd_score', logy=False, ylabel='norm qd score')
-            plot_qd_archive(self.archive)
+            registration_util.plot_poke_losses(qd_scores, savedir=self.savedir, loss_name='qd_score', logy=False,
+                                               ylabel='norm qd score')
+            registration_util.plot_qd_archive(self.archive, savedir=self.savedir)
 
         return R, T, rmse
 
