@@ -234,6 +234,10 @@ class VolumetricCost(RegistrationCost):
         self.model_interior_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < interior_threshold)
         if self.model_interior_points_orig.shape[0] == 0:
             raise RuntimeError("Something's wrong with the SDF since there are no interior points")
+        # need to extract tensor properties from somewhere
+        self.dtype = self.model_interior_points_orig.dtype
+        self.device = self.model_interior_points_orig.device
+
         self.model_interior_weights, self.model_interior_normals_orig = self.sdf(self.model_interior_points_orig)
         self.model_interior_weights *= -1
 
