@@ -141,11 +141,8 @@ class CMAME(QDOptimization):
     MEASURE_DIM = 2
 
     def __init__(self, *args, bins=20, iterations=100,
-                 # can either specify an explicit range
+                 # require an explicit range
                  ranges=None,
-                 # or form ranges from centroid of contact points and an estimated object length scale and poke offset direction
-                 object_length_scale=0.1,
-                 poke_offset_direction=(0.5, 0),  # default is forward along x; |offset| < 1 to represent uncertainty
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
                  **kwargs):
         if "sigma" not in kwargs:
@@ -157,8 +154,6 @@ class CMAME(QDOptimization):
             self.bins = bins
         self.iterations = iterations
         self.ranges = ranges
-        self.m = object_length_scale
-        self.poke_offset_direction = poke_offset_direction
         self.qd_score_offset = qd_score_offset
 
         self.archive = None
@@ -168,11 +163,7 @@ class CMAME(QDOptimization):
 
     def _create_ranges(self):
         if self.ranges is None:
-            centroid = self.Xt.mean(dim=-2).mean(dim=-2).cpu().numpy()
-            # extract XY (leave Z to be searched on)
-            centroid = centroid[:2]
-            centroid += self.m * np.array(self.poke_offset_direction)
-            self.ranges = np.array((centroid - self.m, centroid + self.m)).T
+            raise RuntimeError("An explicit archive range must be specified")
 
     def create_scheduler(self, x, *args, **kwargs):
         self._create_ranges()
