@@ -18,8 +18,6 @@ from chsel import registration_util
 
 logger = logging.getLogger(__name__)
 
-previous_solutions = None
-
 
 class QDOptimization:
     def __init__(self, registration_cost: RegistrationCost,
@@ -30,6 +28,18 @@ class QDOptimization:
                  save_loss_plot=False,
                  savedir=registration_util.ROOT_DIR,
                  **kwargs):
+        """
+
+        :param registration_cost: some implementation of Equation 6
+        :param model_points_world_frame: not actually used, but useful for tracking and debugging registration process
+        can be points with known SDF value = 0 (surface points) in the world frame
+        :param init_transform: transform from which to start the estimation
+        :param sigma: QD parameter for specifying degree of exploration
+        :param num_emitters: number of points to consider simultaneously, for example if the search space is large
+        :param save_loss_plot: whether to plot losses and save them
+        :param savedir: where to save the plotted losses
+        :param kwargs: kwargs forwarded to creating the scheduler
+        """
         self.registration_cost = registration_cost
         self.X = model_points_world_frame
         self.Xt = self.X
@@ -47,7 +57,6 @@ class QDOptimization:
         x = self.get_numpy_x(R, T)
         self.num_emitters = num_emitters
         self.scheduler = self.create_scheduler(x, **kwargs)
-        self.restore_previous_results()
 
     def run(self):
         Xt, R, T, s = registration_util.apply_init_transform(self.Xt, self.init_transform)
@@ -78,16 +87,16 @@ class QDOptimization:
         pass
 
     @abc.abstractmethod
-    def restore_previous_results(self):
-        pass
-
-    @abc.abstractmethod
     def process_final_results(self, s, losses):
         pass
 
     @abc.abstractmethod
     def is_done(self):
         return False
+
+    @abc.abstractmethod
+    def get_all_elite_solutions(self):
+        return None
 
     def get_numpy_x(self, R, T):
         q = matrix_to_rotation_6d(R)
@@ -123,6 +132,9 @@ class CMAES(QDOptimization):
 
     def add_solutions(self, solutions):
         pass
+
+    def get_all_elite_solutions(self):
+        return None
 
     def process_final_results(self, s, losses):
         # convert ES back to R, T
@@ -207,27 +219,28 @@ class CMAME(QDOptimization):
         logger.debug("step %d norm QD score: %f", self.i, qd)
         return cost
 
-    def add_solutions(self, solutions):
-        assert isinstance(solutions, np.ndarray)
+    def _add_solutions(self, solutions):
         R, T = self.get_torch_RT(np.stack(solutions))
         rmse = self.registration_cost(R, T, None)
         self.archive.add(solutions, -rmse.cpu().numpy(), self._measure(solutions))
 
-    def restore_previous_results(self):
-        if previous_solutions is None:
+    def add_solutions(self, solutions):
+        if solutions is None:
             return
-        # avoid running out of memory
+        assert isinstance(solutions, np.ndarray)
         SOLUTION_CHUNK = 300
-        for i in range(0, previous_solutions.shape[0], SOLUTION_CHUNK):
-            self.add_solutions(previous_solutions[i:i + SOLUTION_CHUNK])
+        for i in range(0, solutions.shape[0], SOLUTION_CHUNK):
+            self._add_solutions(solutions[i:i + SOLUTION_CHUNK])
+
+    def get_all_elite_solutions(self):
+        df = self.archive.as_pandas()
+        solutions = df.solution_batch()
+        return solutions
 
     def process_final_results(self, s, losses):
-        global previous_solutions
         df = self.archive.as_pandas()
         objectives = df.objective_batch()
         solutions = df.solution_batch()
-        # store to allow restoring on next step
-        previous_solutions = solutions
         if len(solutions) > self.B:
             order = np.argpartition(-objectives, self.B)
             solutions = solutions[order[:self.B]]
