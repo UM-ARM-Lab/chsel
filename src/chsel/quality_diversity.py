@@ -7,8 +7,8 @@ import numpy as np
 
 import torch
 from arm_pytorch_utilities.tensor_utils import ensure_tensor
+from chsel.conversion import RT_to_continuous_representation, continuous_representation_to_RT
 
-from pytorch_kinematics import matrix_to_rotation_6d, rotation_6d_to_matrix
 from ribs.archives import GridArchive
 from ribs.emitters import EvolutionStrategyEmitter, GradientArborescenceEmitter
 from ribs.schedulers import Scheduler
@@ -99,16 +99,10 @@ class QDOptimization:
         return None
 
     def get_numpy_x(self, R, T):
-        q = matrix_to_rotation_6d(R)
-        x = torch.cat([q, T], dim=-1).cpu().numpy()
-        return x
+        return RT_to_continuous_representation(R, T).cpu().numpy()
 
     def get_torch_RT(self, x):
-        q_ = x[..., :6]
-        t = x[..., 6:]
-        qq, TT = ensure_tensor(self.device, self.dtype, q_, t)
-        RR = rotation_6d_to_matrix(qq)
-        return RR, TT
+        return continuous_representation_to_RT(x, self.device, self.dtype)
 
 
 class CMAES(QDOptimization):
