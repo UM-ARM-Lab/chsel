@@ -1,4 +1,6 @@
 import torch
+import enum
+import numpy as np
 from typing import List, NamedTuple, Union
 
 
@@ -17,3 +19,12 @@ class ICPSolution(NamedTuple):
     Xt: torch.Tensor
     RTs: SimilarityTransform
     t_history: List[SimilarityTransform]
+
+
+class SemanticsClass(enum.Enum):
+    FREE = 0
+    OCCUPIED = 1
+
+
+# for known SDF value, it is the actual float value
+Semantics = Union[float, SemanticsClass]

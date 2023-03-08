@@ -19,7 +19,7 @@ def volumetric_registration_sgd(
         relative_rmse_thr: float = 1e-6,
         estimate_scale: bool = False,
         verbose: bool = False,
-        save_loss_plot=True,
+        save_loss_plot=False,
         **kwargs,
 ) -> ICPSolution:
     """
