@@ -143,20 +143,19 @@ class CMAES(QDOptimization):
 
 
 class CMAME(QDOptimization):
-    # how many dimensions of translation to use, in the order of XYZ
-    MEASURE_DIM = 2
-
     def __init__(self, *args, bins=20, iterations=100,
                  # require an explicit range
                  ranges=None,
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
+                 measure_dim=2, # how many dimensions of translation to use, in the order of XYZ
                  **kwargs):
+        self.measure_dim = measure_dim
         if "sigma" not in kwargs:
             kwargs["sigma"] = 1.0
         if isinstance(bins, (float, int)):
-            self.bins = [bins for _ in range(self.MEASURE_DIM)]
+            self.bins = [bins for _ in range(self.measure_dim)]
         else:
-            assert len(bins) == self.MEASURE_DIM
+            assert len(bins) == self.measure_dim
             self.bins = bins
         self.iterations = iterations
         self.ranges = ranges
@@ -173,7 +172,7 @@ class CMAME(QDOptimization):
 
     def create_scheduler(self, x, *args, **kwargs):
         self._create_ranges()
-        self.archive = GridArchive(solution_dim=x.shape[1], dims=self.bins, ranges=self.ranges[:self.MEASURE_DIM],
+        self.archive = GridArchive(solution_dim=x.shape[1], dims=self.bins, ranges=self.ranges[:self.measure_dim],
                                    seed=np.random.randint(0, 10000), qd_score_offset=self.qd_score_offset)
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x[i], sigma0=self.sigma, batch_size=self.B,
@@ -186,16 +185,14 @@ class CMAME(QDOptimization):
     def is_done(self):
         return self.i >= self.iterations
 
-    @classmethod
-    def _measure(cls, x):
+    def _measure(self, x):
         # behavior is the xyz translation
-        return x[..., 6:6 + cls.MEASURE_DIM]
+        return x[..., 6:6 + self.measure_dim]
 
-    @classmethod
-    def _measure_grad(cls, x):
+    def _measure_grad(self, x):
         # measure (aka behavior) is just the translation so jacobian is just identity for the corresponding dimensions
-        grad = np.zeros((cls.MEASURE_DIM, x.shape[-1]))
-        grad[:, 6:6 + cls.MEASURE_DIM] = np.eye(cls.MEASURE_DIM)
+        grad = np.zeros((self.measure_dim, x.shape[-1]))
+        grad[:, 6:6 + self.measure_dim] = np.eye(self.measure_dim)
         grad = np.tile(grad, (x.shape[0], 1, 1))
         return grad
 
@@ -260,7 +257,7 @@ class CMAMEGA(CMAME):
     def create_scheduler(self, x, *args, **kwargs):
         self._create_ranges()
         self.archive = GridArchive(solution_dim=x.shape[1], dims=self.bins, seed=np.random.randint(0, 10000),
-                                   ranges=self.ranges[:self.MEASURE_DIM], qd_score_offset=self.qd_score_offset)
+                                   ranges=self.ranges[:self.measure_dim], qd_score_offset=self.qd_score_offset)
         emitters = []
         # emitters += [
         #     EvolutionStrategyEmitter(self.archive, x0=x[i], sigma0=self.sigma, batch_size=self.B) for i in

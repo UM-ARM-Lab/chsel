@@ -32,6 +32,7 @@ class CHSEL:
                  bins=40,
                  qd_iterations=100,
                  qd_alg=quality_diversity.CMAMEGA,
+                 qd_measure_dim=2,
                  savedir=registration_util.ROOT_DIR,
                  debug=False,
                  qd_alg_kwargs=None,
@@ -53,6 +54,11 @@ class CHSEL:
         :param bins: How many bins each dimension of the archive will have
         :param qd_iterations: n_o number of quality diversity optimization iterations
         :param qd_alg: The quality diversity optimization algorithm to use
+        :param qd_measure_dim: The number of translation dimensions to use for the QD measure in the order of XYZ -
+        this is what is ensured diversity across. For example, if you use qd_measure_dim=2, only diversity of estimated
+        transforms across X and Y translation terms will be ensured. This may be useful if you have an upright prior
+        that the object lies on a plane normal to Z. Empirically, we found no significant difference in performance
+        between 2 and 3 dimensions.
         :param savedir: Directory to save loss plots
         :param debug:
         """
@@ -82,7 +88,9 @@ class CHSEL:
         self.qd = None
         self.res_history = []
 
-        self._qd_alg_kwargs = qd_alg_kwargs or {}
+        self._qd_alg_kwargs = {"measure_dim": qd_measure_dim}
+        if qd_alg_kwargs is not None:
+            self._qd_alg_kwargs.update(qd_alg_kwargs)
 
         # extract the known free voxels from the given free points
         if free_voxels is None:
@@ -167,12 +175,11 @@ class CHSEL:
         if debug_func_after_sgd_init is not None:
             debug_func_after_sgd_init(self)
 
-        method_specific_kwargs = {}
-        method_specific_kwargs.update(self._qd_alg_kwargs)
+        # run QD
         self.qd = self.qd_alg(self.volumetric_cost, known_pts_world_frame.repeat(batch, 1, 1),
                               init_transform=initial_tsf,
                               iterations=self.qd_iterations, num_emitters=1, bins=self.bins,
-                              ranges=archive_range, savedir=self.savedir, **method_specific_kwargs)
+                              ranges=archive_range, savedir=self.savedir, **self._qd_alg_kwargs)
 
         # \hat{T}_0
         x = self.qd.get_numpy_x(self.res_init.RTs.R, self.res_init.RTs.T)
