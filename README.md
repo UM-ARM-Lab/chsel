@@ -1,3 +1,10 @@
+## Installation
+TODO PyPI after making repository public
+
+For development, clone repository somewhere, then `pip3 install -e .` to install in editable mode.
+
+
+
 ## Usage
 CHSEL registers an observed semantic point cloud against a target object's signed distance field (SDF).
 
