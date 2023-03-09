@@ -24,7 +24,6 @@ class CHSEL:
                  obj_sdf: pv.ObjectFrameSDF,
                  positions: torch.tensor, semantics: Sequence[types.Semantics],
                  cost=costs.VolumetricDirectSDFCost,
-                 low_cost_transform_set=None,
                  free_voxels: Optional[pv.Voxels] = None,
                  occupied_voxels: Optional[pv.Voxels] = None,
                  known_sdf_voxels: Optional[pv.Voxels] = None,
@@ -43,7 +42,6 @@ class CHSEL:
         :param positions: World frame positions of the observed points
         :param semantics: Semantics of the observed points
         :param cost: Class that implements Eq. 6
-        :param low_cost_transform_set: T_l low cost transform set such as from the previous iteration
         :param free_voxels: Explicit specification of free space voxels; if not specified they will be extracted
         from the given points that have the FREE semantics. If the observed points are derived from free voxels,
         it will save recreating them if these are specified directly.
@@ -68,8 +66,6 @@ class CHSEL:
         semantics = np.asarray(semantics, dtype=object)
         self.semantics = semantics
 
-        self.low_cost_transform_set = low_cost_transform_set
-
         self.debug = debug
         self.archive_range_sigma = archive_range_sigma
         self.bins = bins
@@ -84,8 +80,9 @@ class CHSEL:
         # intermediate results for use outside for debugging
         self.res_init = None
         self.qd = None
+        self.res_history = []
 
-        self._qd_alg_kwargs = qd_alg_kwargs
+        self._qd_alg_kwargs = qd_alg_kwargs or {}
 
         # extract the known free voxels from the given free points
         if free_voxels is None:
@@ -109,9 +106,46 @@ class CHSEL:
         self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf, dtype=self.dtype, device=self.device,
                                     **cost_options)
 
-    def register(self, initial_tsf=None, batch=30, debug_func_after_sgd_init=None):
+    def register(self, iterations=1, initial_tsf=None, low_cost_transform_set=None, **kwargs):
+        """
+        Register the semantic point cloud to the given object SDF
+        :param iterations: number of iterations to run
+        :param initial_tsf: T_0 initial transform to use for the optimization
+        :param low_cost_transform_set: T_l low cost transform set such as from the previous iteration
+        :param kwargs: arguments to pass to register_single
+        :return: the registration result and all the archive solutions
+        """
+        res = None
+        all_solutions = None
+        self.res_history = []
+        for i in range(iterations):
+            res, all_solutions = self.register_single(initial_tsf=initial_tsf,
+                                                      low_cost_transform_set=low_cost_transform_set,
+                                                      **kwargs)
+            self.res_history.append(res)
+            world_to_link = registration_util.solution_to_world_to_link_matrix(res)
+
+            # TODO auto select reinitialization policy based on RMSE distribution
+            # reinitialize world_to_link around elites
+            initial_tsf = chsel.reinitialize_transform_around_elites(world_to_link, res.rmse)
+
+            low_cost_transform_set = all_solutions
+        return res, all_solutions
+
+    def register_single(self, initial_tsf=None, low_cost_transform_set=None, batch=30, debug_func_after_sgd_init=None):
+        """
+
+        :param initial_tsf: T_0 initial transform to use for the optimization
+        :param low_cost_transform_set: T_l low cost transform set such as from the previous iteration
+        :param batch: number of transforms to estimate, only used if initial_tsf is not specified
+        :param debug_func_after_sgd_init: debug function to call after the initial sgd optimization with the CHSEL
+        object passed in
+        :return: the registration result and all the archive solutions
+        """
         dim_pts = self.positions.shape[-1]
         known_pts_world_frame = self.positions[self._known]
+        if initial_tsf is not None:
+            batch = initial_tsf.shape[0]
 
         initial_tsf = init_random_transform_with_given_init(dim_pts, batch, self.dtype, self.device,
                                                             initial_tsf=initial_tsf)
@@ -144,7 +178,7 @@ class CHSEL:
         x = self.qd.get_numpy_x(self.res_init.RTs.R, self.res_init.RTs.T)
         self.qd.add_solutions(x)
         # \hat{T}_l (such as from the previous iteration's get_all_elite_solutions())
-        self.qd.add_solutions(self.low_cost_transform_set)
+        self.qd.add_solutions(low_cost_transform_set)
 
         res = self.qd.run()
 
