@@ -7,8 +7,8 @@ import numpy as np
 
 import torch
 from arm_pytorch_utilities.tensor_utils import ensure_tensor
+from chsel.conversion import RT_to_continuous_representation, continuous_representation_to_RT
 
-from pytorch_kinematics import matrix_to_rotation_6d, rotation_6d_to_matrix
 from ribs.archives import GridArchive
 from ribs.emitters import EvolutionStrategyEmitter, GradientArborescenceEmitter
 from ribs.schedulers import Scheduler
@@ -17,8 +17,6 @@ from chsel.types import SimilarityTransform, ICPSolution
 from chsel import registration_util
 
 logger = logging.getLogger(__name__)
-
-previous_solutions = None
 
 
 class QDOptimization:
@@ -30,6 +28,18 @@ class QDOptimization:
                  save_loss_plot=False,
                  savedir=registration_util.ROOT_DIR,
                  **kwargs):
+        """
+
+        :param registration_cost: some implementation of Equation 6
+        :param model_points_world_frame: not actually used, but useful for tracking and debugging registration process
+        can be points with known SDF value = 0 (surface points) in the world frame
+        :param init_transform: transform from which to start the estimation
+        :param sigma: QD parameter for specifying degree of exploration
+        :param num_emitters: number of points to consider simultaneously, for example if the search space is large
+        :param save_loss_plot: whether to plot losses and save them
+        :param savedir: where to save the plotted losses
+        :param kwargs: kwargs forwarded to creating the scheduler
+        """
         self.registration_cost = registration_cost
         self.X = model_points_world_frame
         self.Xt = self.X
@@ -47,7 +57,6 @@ class QDOptimization:
         x = self.get_numpy_x(R, T)
         self.num_emitters = num_emitters
         self.scheduler = self.create_scheduler(x, **kwargs)
-        self.restore_previous_results()
 
     def run(self):
         Xt, R, T, s = registration_util.apply_init_transform(self.Xt, self.init_transform)
@@ -78,10 +87,6 @@ class QDOptimization:
         pass
 
     @abc.abstractmethod
-    def restore_previous_results(self):
-        pass
-
-    @abc.abstractmethod
     def process_final_results(self, s, losses):
         pass
 
@@ -89,17 +94,15 @@ class QDOptimization:
     def is_done(self):
         return False
 
+    @abc.abstractmethod
+    def get_all_elite_solutions(self):
+        return None
+
     def get_numpy_x(self, R, T):
-        q = matrix_to_rotation_6d(R)
-        x = torch.cat([q, T], dim=-1).cpu().numpy()
-        return x
+        return RT_to_continuous_representation(R, T).cpu().numpy()
 
     def get_torch_RT(self, x):
-        q_ = x[..., :6]
-        t = x[..., 6:]
-        qq, TT = ensure_tensor(self.device, self.dtype, q_, t)
-        RR = rotation_6d_to_matrix(qq)
-        return RR, TT
+        return continuous_representation_to_RT(x, self.device, self.dtype)
 
 
 class CMAES(QDOptimization):
@@ -124,6 +127,9 @@ class CMAES(QDOptimization):
     def add_solutions(self, solutions):
         pass
 
+    def get_all_elite_solutions(self):
+        return None
+
     def process_final_results(self, s, losses):
         # convert ES back to R, T
         solutions = self.scheduler.ask()
@@ -141,11 +147,8 @@ class CMAME(QDOptimization):
     MEASURE_DIM = 2
 
     def __init__(self, *args, bins=20, iterations=100,
-                 # can either specify an explicit range
+                 # require an explicit range
                  ranges=None,
-                 # or form ranges from centroid of contact points and an estimated object length scale and poke offset direction
-                 object_length_scale=0.1,
-                 poke_offset_direction=(0.5, 0),  # default is forward along x; |offset| < 1 to represent uncertainty
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
                  **kwargs):
         if "sigma" not in kwargs:
@@ -157,8 +160,6 @@ class CMAME(QDOptimization):
             self.bins = bins
         self.iterations = iterations
         self.ranges = ranges
-        self.m = object_length_scale
-        self.poke_offset_direction = poke_offset_direction
         self.qd_score_offset = qd_score_offset
 
         self.archive = None
@@ -168,11 +169,7 @@ class CMAME(QDOptimization):
 
     def _create_ranges(self):
         if self.ranges is None:
-            centroid = self.Xt.mean(dim=-2).mean(dim=-2).cpu().numpy()
-            # extract XY (leave Z to be searched on)
-            centroid = centroid[:2]
-            centroid += self.m * np.array(self.poke_offset_direction)
-            self.ranges = np.array((centroid - self.m, centroid + self.m)).T
+            raise RuntimeError("An explicit archive range must be specified")
 
     def create_scheduler(self, x, *args, **kwargs):
         self._create_ranges()
@@ -216,27 +213,28 @@ class CMAME(QDOptimization):
         logger.debug("step %d norm QD score: %f", self.i, qd)
         return cost
 
-    def add_solutions(self, solutions):
-        assert isinstance(solutions, np.ndarray)
+    def _add_solutions(self, solutions):
         R, T = self.get_torch_RT(np.stack(solutions))
         rmse = self.registration_cost(R, T, None)
         self.archive.add(solutions, -rmse.cpu().numpy(), self._measure(solutions))
 
-    def restore_previous_results(self):
-        if previous_solutions is None:
+    def add_solutions(self, solutions):
+        if solutions is None:
             return
-        # avoid running out of memory
+        assert isinstance(solutions, np.ndarray)
         SOLUTION_CHUNK = 300
-        for i in range(0, previous_solutions.shape[0], SOLUTION_CHUNK):
-            self.add_solutions(previous_solutions[i:i + SOLUTION_CHUNK])
+        for i in range(0, solutions.shape[0], SOLUTION_CHUNK):
+            self._add_solutions(solutions[i:i + SOLUTION_CHUNK])
+
+    def get_all_elite_solutions(self):
+        df = self.archive.as_pandas()
+        solutions = df.solution_batch()
+        return solutions
 
     def process_final_results(self, s, losses):
-        global previous_solutions
         df = self.archive.as_pandas()
         objectives = df.objective_batch()
         solutions = df.solution_batch()
-        # store to allow restoring on next step
-        previous_solutions = solutions
         if len(solutions) > self.B:
             order = np.argpartition(-objectives, self.B)
             solutions = solutions[order[:self.B]]

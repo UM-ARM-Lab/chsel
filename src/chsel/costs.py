@@ -1,8 +1,8 @@
 import matplotlib.colors, matplotlib.cm
 import torch
+import typing
 
-import pytorch_volumetric.sdf
-from pytorch_volumetric import voxel
+import pytorch_volumetric as pv
 from chsel.registration_util import apply_similarity_transform
 from typing import Any
 
@@ -35,7 +35,7 @@ class ComposeCost(RegistrationCost):
 class FreeSpaceVoxelDiffCost(torch.autograd.Function):
     @staticmethod
     def forward(ctx: Any, world_frame_interior_points: torch.tensor, world_frame_interior_gradients: torch.tensor,
-                interior_point_weights: torch.tensor, world_frame_voxels: voxel.VoxelGrid) -> torch.tensor:
+                interior_point_weights: torch.tensor, world_frame_voxels: pv.VoxelGrid) -> torch.tensor:
         # interior points should not be occupied
         # B x Nfree
         occupied = world_frame_voxels[world_frame_interior_points]
@@ -67,21 +67,22 @@ class FreeSpaceVoxelDiffCost(torch.autograd.Function):
 
 
 class FreeSpaceLookupCost(torch.autograd.Function):
-    # alpha < 0 to tolerate some amount of penetration to compensate for resolution and precision issues
-    interior_threshold = -0.01
 
     @staticmethod
-    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF,
-                model_frame_free_pos: torch.tensor) -> torch.tensor:
+    def forward(ctx: Any, sdf: pv.ObjectFrameSDF,
+                model_frame_free_pos: torch.tensor, surface_threshold=0.01) -> torch.tensor:
+        # alpha < 0 to tolerate some amount of penetration to compensate for resolution and precision issues
+        # surface_threshold = -alpha
+        interior_threshold = -surface_threshold
         definitely_not_violating = sdf.outside_surface(model_frame_free_pos,
-                                                       surface_level=FreeSpaceLookupCost.interior_threshold)
+                                                       surface_level=interior_threshold)
         violating = ~definitely_not_violating
         # this full lookup is much, much slower than the cached version with points, but are about equivalent
         sdf_value, sdf_grad = sdf(model_frame_free_pos[violating])
         # interior points will have sdf_value < 0
         loss = torch.zeros(model_frame_free_pos.shape[:-1], dtype=model_frame_free_pos.dtype,
                            device=model_frame_free_pos.device)
-        violation = FreeSpaceLookupCost.interior_threshold - sdf_value
+        violation = interior_threshold - sdf_value
         loss[violating] = violation
         loss = loss.sum(dim=-1)
         ctx.save_for_backward(violating, violation, sdf_value, sdf_grad)
@@ -92,6 +93,7 @@ class FreeSpaceLookupCost(torch.autograd.Function):
         # need to output the gradient of the loss w.r.t. all the inputs of forward
         dl_dsdf = None
         dl_dvoxels = None
+        dl_dthreshold = None
         if ctx.needs_input_grad[1]:
             violating, violation, sdf_value, sdf_grad = ctx.saved_tensors
             # SDF grads point away from the surface; in this case we want to move the surface away from the occupied
@@ -101,22 +103,21 @@ class FreeSpaceLookupCost(torch.autograd.Function):
             dl_dvoxels = grad_outputs[:, None, None] * -grads
 
         # gradients for the other inputs not implemented
-        return dl_dsdf, dl_dvoxels
+        return dl_dsdf, dl_dvoxels, dl_dthreshold
 
 
 class OccupiedLookupCost(torch.autograd.Function):
-    interior_threshold = -0.01
-
     @staticmethod
-    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF,
-                model_frame_occ_pos: torch.tensor) -> torch.tensor:
-        violating = sdf.outside_surface(model_frame_occ_pos, surface_level=-FreeSpaceLookupCost.interior_threshold)
+    def forward(ctx: Any, sdf: pv.ObjectFrameSDF,
+                model_frame_occ_pos: torch.tensor, surface_threshold=0.01) -> torch.tensor:
+        interior_threshold = - surface_threshold
+        violating = sdf.outside_surface(model_frame_occ_pos, surface_level=surface_threshold)
         # this full lookup is much, much slower than the cached version with points, but are about equivalent
         sdf_value, sdf_grad = sdf(model_frame_occ_pos[violating])
         # interior points will have sdf_value < 0
         loss = torch.zeros(model_frame_occ_pos.shape[:-1], dtype=model_frame_occ_pos.dtype,
                            device=model_frame_occ_pos.device)
-        violation = -(FreeSpaceLookupCost.interior_threshold + sdf_value)
+        violation = -(interior_threshold + sdf_value)
         loss[violating] = violation
         loss = loss.sum(dim=-1)
         ctx.save_for_backward(violating, violation, sdf_value, sdf_grad)
@@ -127,6 +128,7 @@ class OccupiedLookupCost(torch.autograd.Function):
         # need to output the gradient of the loss w.r.t. all the inputs of forward
         dl_dsdf = None
         dl_dvoxels = None
+        dl_dthreshold = None
         if ctx.needs_input_grad[1]:
             violating, violation, sdf_value, sdf_grad = ctx.saved_tensors
             # SDF grads point away from the surface; in this case we want to move the surface away from the occupied
@@ -136,12 +138,12 @@ class OccupiedLookupCost(torch.autograd.Function):
             dl_dvoxels = grad_outputs[:, None, None] * -grads
 
         # gradients for the other inputs not implemented
-        return dl_dsdf, dl_dvoxels
+        return dl_dsdf, dl_dvoxels, dl_dthreshold
 
 
 class KnownSDFLookupCost(torch.autograd.Function):
     @staticmethod
-    def forward(ctx: Any, sdf: pytorch_volumetric.sdf.ObjectFrameSDF, model_frame_positions: torch.tensor,
+    def forward(ctx: Any, sdf: pv.ObjectFrameSDF, model_frame_positions: torch.tensor,
                 expected_sdf_values: torch.tensor) -> torch.tensor:
         # should be fast since they should be in cache
         sdf_value, sdf_grad = sdf(model_frame_positions)
@@ -205,17 +207,27 @@ class KnownSDFVoxelDiffCost:
 class VolumetricCost(RegistrationCost):
     """Cost of transformed model pose intersecting with known freespace voxels"""
 
-    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels,
-                 obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
-                 vis=None, scale_known_freespace=1., scale_known_sdf=1.,
-                 obj_factory=None,
+    def __init__(self, free_voxels: pv.Voxels, sdf_voxels: pv.Voxels,
+                 obj_sdf: pv.ObjectFrameSDF,
+                 surface_threshold=0.01,
+                 # cost scales
+                 scale=1, scale_known_freespace=1., scale_known_sdf=1.,
+                 device='cpu', dtype=torch.float,
+                 # for some cost approximations for acceleration
+                 query_voxel_grid: typing.Optional[pv.VoxelGrid] = None,
+                 # for debugging only
+                 vis=None, obj_factory=None,
                  debug=False, debug_known_sgd=False, debug_freespace=False):
         """
         :param free_voxels: representation of freespace
         :param sdf_voxels: voxels for which we know the exact SDF values for
         :param obj_sdf: signed distance function of the target object in object frame
+        :param surface_threshold: alpha in meters the tolerance for penetration
         :param scale:
         """
+
+        self.device = device
+        self.dtype = dtype
 
         self.free_voxels = free_voxels
         self.sdf_voxels = sdf_voxels
@@ -226,20 +238,31 @@ class VolumetricCost(RegistrationCost):
 
         # SDF gives us a volumetric representation of the target object
         self.sdf = obj_sdf
+        self.surface_threshold = surface_threshold
 
         # ---- for +, known free space points, we just have to care about interior points of the object
         # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
-        interior_threshold = -0.01
-        surface_threshold = -interior_threshold
-        self.model_interior_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < interior_threshold)
+        interior_threshold = -surface_threshold
+        if query_voxel_grid is None:
+            query_voxel_grid = pv.VoxelGrid(self.surface_threshold,
+                                            self.sdf.surface_bounding_box(padding=0.1).cpu().numpy(),
+                                            dtype=self.dtype, device=self.device)
+
+        self.model_interior_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < interior_threshold,
+                                                                       voxels=query_voxel_grid)
         if self.model_interior_points_orig.shape[0] == 0:
             raise RuntimeError("Something's wrong with the SDF since there are no interior points")
+
         self.model_interior_weights, self.model_interior_normals_orig = self.sdf(self.model_interior_points_orig)
         self.model_interior_weights *= -1
 
-        self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < surface_threshold)
+        self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < surface_threshold,
+                                                             voxels=query_voxel_grid)
         self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points)
 
+        if self.model_interior_points_orig.shape[0] == self.model_all_points.shape[0]:
+            raise RuntimeError("The voxelgrid to query points is too small and only interior points have been "
+                               "extracted. Resolve this by increasing the range the voxel grid is over")
         # batch
         self.B = None
 
@@ -443,10 +466,14 @@ class VolumetricDoubleDirectCost(RegistrationCost):
     """Cost of transformed model pose intersecting with known freespace voxels
     (slower than the voxelized version above)"""
 
-    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels,
-                 obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
-                 vis=None, scale_known_freespace=1., scale_known_sdf=1.,
-                 obj_factory=None,
+    def __init__(self, free_voxels: pv.Voxels, sdf_voxels: pv.voxel.Voxels,
+                 obj_sdf: pv.ObjectFrameSDF,
+                 surface_threshold=0.01,
+                 # cost scales
+                 scale=1, scale_known_freespace=1., scale_known_sdf=1.,
+                 device='cpu', dtype=torch.float,
+                 # for debugging only
+                 vis=None, obj_factory=None,
                  debug=False, debug_known_sgd=False, debug_freespace=False):
         """
         :param free_voxels: representation of freespace
@@ -464,22 +491,10 @@ class VolumetricDoubleDirectCost(RegistrationCost):
 
         # SDF gives us a volumetric representation of the target object
         self.sdf = obj_sdf
+        self.surface_threshold = surface_threshold
 
-        # ---- for +, known free space points, we just have to care about interior points of the object
-        # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
-        interior_threshold = -0.01
-        surface_threshold = -interior_threshold
-        self.model_interior_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < interior_threshold)
-        # if self.model_interior_points_orig.shape[0] == 0:
-        #     raise RuntimeError("Something's wrong with the SDF since there are no interior points")
-        # self.model_interior_weights, self.model_interior_normals_orig = self.sdf(self.model_interior_points_orig)
-        # self.model_interior_weights *= -1
-
-        self.model_all_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < surface_threshold)
-        self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points_orig)
-
-        self.device = self.model_all_points_orig.device
-        self.dtype = self.model_all_points_orig.dtype
+        self.device = device
+        self.dtype = dtype
 
         # batch
         self.B = None
@@ -505,7 +520,7 @@ class VolumetricDoubleDirectCost(RegistrationCost):
             world_frame_free_voxels = world_frame_free_voxels[known_free.view(-1) == 1]
             model_frame_free_voxels = self._transform_world_frame_points_to_model_frame(R, T, s,
                                                                                         world_frame_free_voxels)
-            known_free_space_loss = FreeSpaceLookupCost.apply(self.sdf, model_frame_free_voxels)
+            known_free_space_loss = FreeSpaceLookupCost.apply(self.sdf, model_frame_free_voxels, self.surface_threshold)
             loss += known_free_space_loss * self.scale_known_freespace
         if self.scale_known_sdf != 0:
             world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
@@ -524,8 +539,8 @@ class VolumetricDoubleDirectCost(RegistrationCost):
 class DiscreteNondifferentiableCost(RegistrationCost):
     """Flat high cost for any known free space point violations"""
 
-    def __init__(self, free_voxels: voxel.Voxels, sdf_voxels: voxel.Voxels,
-                 obj_sdf: pytorch_volumetric.sdf.ObjectFrameSDF, scale=1,
+    def __init__(self, free_voxels: pv.Voxels, sdf_voxels: pv.Voxels,
+                 obj_sdf: pv.ObjectFrameSDF, scale=1,
                  vis=None, cmax=20., penetration_tolerance=0.01,
                  obj_factory=None):
         """

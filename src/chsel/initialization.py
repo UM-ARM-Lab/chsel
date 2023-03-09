@@ -2,6 +2,7 @@ import enum
 
 import numpy as np
 import torch
+from chsel import conversion
 
 from pytorch_kinematics import transforms as tf
 
@@ -48,6 +49,35 @@ def reinitialize_transform_estimates(B, best_tsf_guess, radian_sigma=0.3, transl
     T_init[0] = best_tsf_guess
     best_tsf_guess = T_init
     return best_tsf_guess
+
+
+def reinitialize_transform_around_elites(tsfs, rmse, elite_percentile=0.2, keep_elite=True):
+    # find elite tsfs and reinitialize around them
+    # sample rotation and translation around the previous best solution to reinitialize
+    dtype = tsfs.dtype
+    device = tsfs.device
+
+    B = tsfs.shape[0]
+
+    # find elite tsfs
+    k = int(elite_percentile * B)
+    elite_idx = np.argpartition(rmse.cpu().numpy(), k)[:k]
+    elite_tsfs = tsfs[elite_idx]
+
+    # sample in the continuous 9D space
+    elite_x = conversion.RT_to_continuous_representation(elite_tsfs[:, :3, :3], elite_tsfs[:, :3, 3])
+    # sample B 9D vectors around the mean of elite_x with std matching its std
+    elite_x_mean = elite_x.mean(dim=0)
+    elite_x_std = elite_x.std(dim=0)
+    x = torch.randn((B, 9), dtype=dtype, device=device) * elite_x_std + elite_x_mean
+    if keep_elite:
+        x[:k] = elite_x
+
+    R, T = conversion.continuous_representation_to_RT(x)
+    tsfs = torch.eye(4, dtype=dtype, device=device).repeat(B, 1, 1)
+    tsfs[:, :3, :3] = R
+    tsfs[:, :3, 3] = T
+    return tsfs
 
 
 def random_rotation_perturbations(B, dtype, device, radian_sigma):

@@ -1,10 +1,11 @@
 import os
 from typing import Optional
 
+import numpy as np
 import torch
 from matplotlib import pyplot as plt, cm as cm
 from ribs.visualize import grid_archive_heatmap
-from chsel.types import SimilarityTransform
+from chsel.types import SimilarityTransform, ICPSolution
 
 poke_index = 0
 sgd_index = 0
@@ -115,3 +116,31 @@ def apply_similarity_transform(
     if T is not None:
         X = X + T[:, :, None]
     return X.transpose(-1, -2)
+
+
+def solution_to_world_to_link_matrix(res: ICPSolution):
+    batch = res.RTs.T.shape[0]
+    device = res.RTs.T.device
+    dtype = res.RTs.T.dtype
+    T = torch.eye(4, device=device, dtype=dtype).repeat(batch, 1, 1)
+    T[:, :3, :3] = res.RTs.R
+    T[:, :3, 3] = res.RTs.T
+    return T
+
+
+def initialize_qd_archive(T, rmse, range_pos_sigma=3):
+    TT = T[:, :3, 3]
+    filt = rmse < torch.quantile(rmse, 0.8)
+    pos = TT[filt]
+    pos_std = pos.std(dim=-2).cpu().numpy()
+    centroid = pos.mean(dim=-2).cpu().numpy()
+
+    # diff = pos - pos.mean(dim=-2)
+    # s = diff.square().sum()
+    # pos_total_std = (s / len(pos)).sqrt().cpu().numpy()
+
+    # extract translation measure
+    centroid = centroid
+    pos_std = pos_std
+    ranges = np.array((centroid - pos_std * range_pos_sigma, centroid + pos_std * range_pos_sigma)).T
+    return ranges
