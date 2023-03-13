@@ -118,12 +118,15 @@ def apply_similarity_transform(
     return X.transpose(-1, -2)
 
 
-def solution_to_world_to_link_matrix(res: ICPSolution):
+def solution_to_world_to_link_matrix(res: ICPSolution, invert_rot_matrix=False):
     batch = res.RTs.T.shape[0]
     device = res.RTs.T.device
     dtype = res.RTs.T.dtype
     T = torch.eye(4, device=device, dtype=dtype).repeat(batch, 1, 1)
-    T[:, :3, :3] = res.RTs.R
+    if invert_rot_matrix:
+        T[:, :3, :3] = res.RTs.R.transpose(-1, -2)
+    else:
+        T[:, :3, :3] = res.RTs.R
     T[:, :3, 3] = res.RTs.T
     return T
 

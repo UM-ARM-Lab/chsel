@@ -8,9 +8,23 @@ import chsel
 import pytorch_volumetric as pv
 from pytorch_seed import seed
 
+import subprocess
 import logging
 
+from chsel.types import SimilarityTransform
+from chsel.wrapper import init_random_transform_with_given_init
+from contextlib import nullcontext
+from timeit import default_timer as timer
+
+# recording the video
+try:
+    from window_recorder import WindowRecorder
+except ImportError:
+    WindowRecorder = nullcontext
+
 TEST_DIR = os.path.dirname(__file__)
+
+logger = logging.getLogger(__file__)
 
 logging.basicConfig(level=logging.INFO, force=True,
                     format='[%(levelname)s %(asctime)s %(pathname)s:%(lineno)d] %(message)s',
@@ -19,6 +33,7 @@ logging.basicConfig(level=logging.INFO, force=True,
 
 def test_chsel_on_drill():
     visualize = True
+    compare_against_icp = True
     d = "cuda" if torch.cuda.is_available() else "cpu"
     seed(1)
     # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
@@ -76,6 +91,33 @@ def test_chsel_on_drill():
         ctr.rotate(5.0, 0.0)
         return False
 
+    def draw_geometries_one_rotation(geometries):
+        nonlocal first_rotate
+
+        # open3d visualize geo non-blocking
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+        for item in geometries:
+            vis.add_geometry(item)
+
+        # unfortunately the rotation isn't specified in terms of angles but in terms of mouse drag units
+        orbit_period = 7.5 * 224 / 242
+
+        # run the recording in the background
+        recorder = subprocess.Popen(["python", os.path.join(TEST_DIR, "record_video.py"), "Open3D", str(orbit_period)])
+
+        start = timer()
+        while True:
+            vis.poll_events()
+            vis.update_renderer()
+            if rotate_view(vis):
+                break
+            if timer() - start > orbit_period + 0.1:
+                break
+        first_rotate = False
+        recorder.wait()
+        logger.info("recording finished")
+
     if visualize:
         # plot object and points
         # have to convert the pts to o3d point cloud
@@ -91,9 +133,7 @@ def test_chsel_on_drill():
         pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu().numpy())
         pc_sdf.paint_uniform_color([0, 0.706, 1])
 
-        o3d.visualization.draw_geometries_with_animation_callback([obj._mesh, pc_free, pc_occupied, pc_sdf],
-                                                                  rotate_view)
-        first_rotate = False
+        draw_geometries_one_rotation([obj._mesh, pc_free, pc_occupied, pc_sdf])
 
     import pytorch_kinematics as pk
 
@@ -108,8 +148,7 @@ def test_chsel_on_drill():
         # only plotting the transformed known SDF points for clarity
         pc_free.points = o3d.utility.Vector3dVector(positions[:N].cpu())
         pc_sdf.points = o3d.utility.Vector3dVector(positions[2 * N:].cpu())
-        o3d.visualization.draw_geometries_with_animation_callback([tf_mesh, pc_free, pc_sdf], rotate_view)
-        first_rotate = False
+        draw_geometries_one_rotation([tf_mesh, pc_free, pc_sdf])
 
     def visualize_transforms(link_to_world):
         # visualize the transformed mesh and points
@@ -121,7 +160,8 @@ def test_chsel_on_drill():
                 # paint tfd_mesh a color corresponding to the index in the batch
                 tfd_mesh.paint_uniform_color([i / (B * 2), 0, 1 - i / (B * 2)])
                 geo.append(tfd_mesh)
-            o3d.visualization.draw_geometries_with_animation_callback(geo, rotate_view)
+
+            draw_geometries_one_rotation(geo)
 
     registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, free_voxels_resolution=0.005)
     # with no initial transform guess (starts guesses with random rotations at the origin)
@@ -143,6 +183,41 @@ def test_chsel_on_drill():
         world_to_link = chsel.solution_to_world_to_link_matrix(registration.res_history[i])
         link_to_world = world_to_link.inverse()
         visualize_transforms(link_to_world)
+
+    # try ICP on this problem for comparison
+    try:
+        if compare_against_icp:
+            from pytorch3d.ops.points_alignment import iterative_closest_point
+
+            pcd = obj._mesh.sample_points_uniformly(number_of_points=500)
+            model_points_register = torch.tensor(np.asarray(pcd.points), device=d, dtype=torch.float)
+
+            # select initial transform from ground truth or from our random initialization
+            # initial_tsf = gt_tf.get_matrix()[0].repeat(B, 1, 1)
+            initial_tsf = random_init_tsf
+            initial_tsf = SimilarityTransform(initial_tsf[:, :3, :3],
+                                              initial_tsf[:, :3, 3],
+                                              torch.ones(B, device=d, dtype=model_points_register.dtype))
+
+            # known_sdf_pts represent the partial observation
+            known_sdf_pts = positions[2 * N:]
+            # test with full observation (1-1 correspondence to the registered points)
+            full_model_points_in_world = gt_tf.transform_points(model_points_register)
+
+            for i in range(10):
+                res = iterative_closest_point(known_sdf_pts.repeat(B, 1, 1), model_points_register.repeat(B, 1, 1),
+                                              init_transform=initial_tsf,
+                                              allow_reflection=False)
+                world_to_link = chsel.solution_to_world_to_link_matrix(res, invert_rot_matrix=True)
+                visualize_transforms(world_to_link.inverse())
+                # refine initial_tsf using elites
+                # doesn't get much better
+                initial_tsf = chsel.reinitialize_transform_around_elites(world_to_link, res.rmse)
+                initial_tsf = SimilarityTransform(initial_tsf[:, :3, :3],
+                                                  initial_tsf[:, :3, 3],
+                                                  torch.ones(B, device=d, dtype=model_points_register.dtype))
+    except ImportError:
+        print("Install pytorch3d to run ICP")
 
     # manually do single step registrations (iterations=1 essentially)
     """

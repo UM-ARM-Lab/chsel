@@ -208,6 +208,40 @@ We gradually refine implausible transforms to plausible ones
 
 ![final](https://i.imgur.com/JbuXzlt.gif)
 
+### Comparison to ICP
+We can use [pytorch3d](https://pytorch3d.org/)'s ICP implementation as comparison. We can see that CHSEL is able to
+converge to plausible transforms while ICP is not able to improve its estimates via refinement
+since it does not use any free space information.
+
+```python
+from pytorch3d.ops.points_alignment import iterative_closest_point
+
+pcd = obj._mesh.sample_points_uniformly(number_of_points=500)
+model_points_register = torch.tensor(np.asarray(pcd.points), device=d, dtype=torch.float)
+initial_tsf = random_init_tsf
+initial_tsf = SimilarityTransform(initial_tsf[:, :3, :3],
+                                  initial_tsf[:, :3, 3],
+                                  torch.ones(B, device=d, dtype=model_points_register.dtype))
+
+# known_sdf_pts represent the partial observation on the object surface
+known_sdf_pts = positions[2 * N:]
+for i in range(10):
+    # note that internally ICP also iterates on its estimate, but refining around the elite estimates may
+    # filter out some outliters
+    res = iterative_closest_point(known_sdf_pts.repeat(B, 1, 1), model_points_register.repeat(B, 1, 1),
+                                  init_transform=initial_tsf,
+                                  allow_reflection=False)
+    world_to_link = chsel.solution_to_world_to_link_matrix(res, invert_rot_matrix=True)
+    visualize_transforms(world_to_link.inverse())
+    # refine initial_tsf using elites
+    # doesn't get much better
+    initial_tsf = chsel.reinitialize_transform_around_elites(world_to_link, res.rmse)
+    initial_tsf = SimilarityTransform(initial_tsf[:, :3, :3],
+                                      initial_tsf[:, :3, 3],
+                                      torch.ones(B, device=d, dtype=model_points_register.dtype))
+
+```
+
 ### Plausible Set Estimation
 Starting from initially random transform guesses may get stuck in bad local minima (it is reasonably robust to it though),
 but if you have access to the ground truth or an approximate transform, you can use it as the initial guess instead.
