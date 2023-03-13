@@ -34,6 +34,9 @@ logging.basicConfig(level=logging.INFO, force=True,
 def test_chsel_on_drill():
     visualize = True
     compare_against_icp = True
+    # if record video is true then the visualization will always rotate one rotation to allow for looping gifs
+    # if it's false then it will be interactable and you can rotate it yourself or close the window
+    record_video = False
     d = "cuda" if torch.cuda.is_available() else "cpu"
     seed(1)
     # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
@@ -93,30 +96,33 @@ def test_chsel_on_drill():
 
     def draw_geometries_one_rotation(geometries):
         nonlocal first_rotate
+        if not record_video:
+            o3d.visualization.draw_geometries_with_animation_callback(geometries, rotate_view)
+        else:
+            # open3d visualize geo non-blocking
+            vis = o3d.visualization.Visualizer()
+            vis.create_window()
+            for item in geometries:
+                vis.add_geometry(item)
 
-        # open3d visualize geo non-blocking
-        vis = o3d.visualization.Visualizer()
-        vis.create_window()
-        for item in geometries:
-            vis.add_geometry(item)
+            # unfortunately the rotation isn't specified in terms of angles but in terms of mouse drag units
+            orbit_period = 7.5 * 224 / 242
 
-        # unfortunately the rotation isn't specified in terms of angles but in terms of mouse drag units
-        orbit_period = 7.5 * 224 / 242
+            # run the recording in the background
+            recorder = subprocess.Popen(
+                ["python", os.path.join(TEST_DIR, "record_video.py"), "Open3D", str(orbit_period)])
 
-        # run the recording in the background
-        recorder = subprocess.Popen(["python", os.path.join(TEST_DIR, "record_video.py"), "Open3D", str(orbit_period)])
-
-        start = timer()
-        while True:
-            vis.poll_events()
-            vis.update_renderer()
-            if rotate_view(vis):
-                break
-            if timer() - start > orbit_period + 0.1:
-                break
-        first_rotate = False
-        recorder.wait()
-        logger.info("recording finished")
+            start = timer()
+            while True:
+                vis.poll_events()
+                vis.update_renderer()
+                if rotate_view(vis):
+                    break
+                if timer() - start > orbit_period + 0.1:
+                    break
+            first_rotate = False
+            recorder.wait()
+            logger.info("recording finished")
 
     if visualize:
         # plot object and points
