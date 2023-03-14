@@ -13,14 +13,8 @@ import logging
 
 from chsel.types import SimilarityTransform
 from chsel.wrapper import init_random_transform_with_given_init
-from contextlib import nullcontext
 from timeit import default_timer as timer
-
-# recording the video
-try:
-    from window_recorder import WindowRecorder
-except ImportError:
-    WindowRecorder = nullcontext
+import time
 
 TEST_DIR = os.path.dirname(__file__)
 
@@ -109,6 +103,7 @@ def test_chsel_on_drill():
             orbit_period = 7.5 * 224 / 242
 
             # run the recording in the background
+            time.sleep(0.1)
             recorder = subprocess.Popen(
                 ["python", os.path.join(TEST_DIR, "record_video.py"), "Open3D", str(orbit_period)])
 
