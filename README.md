@@ -116,7 +116,7 @@ def rotate_view(vis):
 o3d.visualization.draw_geometries_with_animation_callback([obj._mesh, pc_free, pc_occupied, pc_sdf], rotate_view)
 ```
 
-![points](https://i.imgur.com/HxA9xvE.gif)
+![points](https://i.imgur.com/GpQf0w1.gif)
 
 We transform those points from object frame to some random world frame
 ```python
@@ -155,7 +155,7 @@ pc_sdf.points = o3d.utility.Vector3dVector(positions[2 * N:].cpu())
 o3d.visualization.draw_geometries_with_animation_callback([tf_mesh, pc_free, pc_sdf], rotate_view)
 ```
 
-![transformed points](https://i.imgur.com/wwCRlSh.gif)
+![transformed points](https://i.imgur.com/aS8oaZO.gif)
 
 
 We now apply CHSEL for some iterations with an initial random guesses of the transform
@@ -200,13 +200,9 @@ for i in range(len(registration.res_history)):
 
 We gradually refine implausible transforms to plausible ones
 
-![first](https://i.imgur.com/DXRsbV4.gif)
+![first](https://i.imgur.com/5LtBbok.gif)
 
-![second](https://i.imgur.com/OllYXS0.gif)
-
-![third](https://i.imgur.com/MuPukcP.gif)
-
-![final](https://i.imgur.com/JbuXzlt.gif)
+![final](https://i.imgur.com/bxdpgpk.gif)
 
 ### Comparison to ICP
 We can use [pytorch3d](https://pytorch3d.org/)'s ICP implementation as comparison. We can see that CHSEL is able to
