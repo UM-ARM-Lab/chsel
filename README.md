@@ -200,7 +200,7 @@ for i in range(len(registration.res_history)):
 
 We gradually refine implausible transforms to plausible ones
 
-![first](https://i.imgur.com/5LtBbok.gif)
+![first](https://i.imgur.com/wlnnJJL.gif)
 
 ![final](https://i.imgur.com/bxdpgpk.gif)
 
