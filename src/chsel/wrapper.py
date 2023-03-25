@@ -114,6 +114,13 @@ class CHSEL:
         self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf, dtype=self.dtype, device=self.device,
                                     **cost_options)
 
+    def evaluate(self, R: torch.tensor, T: torch.tensor, s: torch.tensor = None):
+        """
+        Evaluate the discrepency between the observed semantic point cloud and the given transforms
+        :return: the cost for each transform
+        """
+        return self.volumetric_cost(R, T, s)
+
     def register(self, iterations=1, initial_tsf=None, low_cost_transform_set=None, **kwargs):
         """
         Register the semantic point cloud to the given object SDF
