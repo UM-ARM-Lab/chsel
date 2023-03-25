@@ -121,6 +121,47 @@ class CHSEL:
         """
         return self.volumetric_cost(R, T, s)
 
+    def update(self, positions, semantics):
+        """
+        Update the observed point cloud and semantics
+        """
+        _free = torch.tensor([s == chsel.SemanticsClass.FREE for s in semantics])
+        _occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in semantics])
+        _known = ~_free & ~_occupied
+        self._free = torch.cat([self._free, _free])
+        self._occupied = torch.cat([self._occupied, _occupied])
+        self._known = torch.cat([self._known, _known])
+        self.positions = torch.cat([self.positions, positions])
+        self.volumetric_cost.free_voxels[positions[_free]] = 1
+        semantics = np.asarray(semantics, dtype=object)
+        if torch.any(_known):
+            # special edge case for updating with only a single point, np interprets true as index 1
+            if len(_known) == 1:
+                # if we directly use 0 as the index, the return is a scalar, so we need to use a slice
+                _known = slice(0, 1)
+            self.volumetric_cost.sdf_voxels[positions[_known]] = torch.tensor(semantics[_known].astype(float),
+                                                                              dtype=self.dtype,
+                                                                              device=self.device)
+
+    def undo_update(self, num_pts):
+        """
+        Undo the latest update
+        :param num_pts: number of points to remove, starting from the last added ones
+        """
+        free = self._free[-num_pts:]
+        pos = self.positions[-num_pts:]
+        # occupied = self._occupied[-num_pts:]
+        self.volumetric_cost.free_voxels[pos[free]] = 0
+
+        self._free = self._free[:-num_pts]
+        self._occupied = self._occupied[:-num_pts]
+        self._known = self._known[:-num_pts]
+        self.positions = self.positions[:-num_pts]
+
+        known_sdf_values = self.semantics[self._known].astype(float)
+        known_sdf_values = torch.tensor(known_sdf_values, dtype=self.dtype, device=self.device)
+        self.volumetric_cost.sdf_voxels = pv.VoxelSet(self.positions[self._known], known_sdf_values)
+
     def register(self, iterations=1, initial_tsf=None, low_cost_transform_set=None, **kwargs):
         """
         Register the semantic point cloud to the given object SDF
