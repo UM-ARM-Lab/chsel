@@ -33,6 +33,8 @@ class CHSEL:
                  qd_iterations=100,
                  qd_alg=quality_diversity.CMAMEGA,
                  qd_measure_dim=2,
+                 qd_measure_fn=None,
+                 qd_measure_grad=None,
                  savedir=registration_util.ROOT_DIR,
                  debug=False,
                  qd_alg_kwargs=None,
@@ -59,6 +61,9 @@ class CHSEL:
         transforms across X and Y translation terms will be ensured. This may be useful if you have an upright prior
         that the object lies on a plane normal to Z. Empirically, we found no significant difference in performance
         between 2 and 3 dimensions.
+        :param qd_measure_fn: The function to use for the QD measure. If not specified, the position is used.
+        :param qd_measure_grad: The gradient of the QD measure function. If not specified, the one associated with
+        position is used.
         :param savedir: Directory to save loss plots
         :param debug:
         """
@@ -88,7 +93,9 @@ class CHSEL:
         self.qd = None
         self.res_history = []
 
-        self._qd_alg_kwargs = {"measure_dim": qd_measure_dim}
+        self._qd_alg_kwargs = {"measure_dim": qd_measure_dim,
+                               "measure_fn": qd_measure_fn,
+                               "measure_grad": qd_measure_grad}
         if qd_alg_kwargs is not None:
             self._qd_alg_kwargs.update(qd_alg_kwargs)
 
@@ -217,7 +224,8 @@ class CHSEL:
         # filter outliers out based on RMSE
         T = registration_util.solution_to_world_to_link_matrix(self.res_init)
         archive_range = registration_util.initialize_qd_archive(T, self.res_init.rmse,
-                                                                range_pos_sigma=self.archive_range_sigma)
+                                                                range_pos_sigma=self.archive_range_sigma,
+                                                                measure_fn=self._qd_alg_kwargs.get('measure_fn', None))
         logger.info("QD position bins %s %s", self.bins, archive_range)
 
         if debug_func_after_sgd_init is not None:

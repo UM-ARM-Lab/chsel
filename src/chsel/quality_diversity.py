@@ -98,7 +98,8 @@ class QDOptimization:
     def get_all_elite_solutions(self):
         return None
 
-    def get_numpy_x(self, R, T):
+    @staticmethod
+    def get_numpy_x(R, T):
         return RT_to_continuous_representation(R, T).cpu().numpy()
 
     def get_torch_RT(self, x):

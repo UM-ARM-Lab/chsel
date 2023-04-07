@@ -6,6 +6,7 @@ import torch
 from matplotlib import pyplot as plt, cm as cm
 from ribs.visualize import grid_archive_heatmap
 from chsel.types import SimilarityTransform, ICPSolution
+from chsel.conversion import RT_to_continuous_representation
 
 poke_index = 0
 sgd_index = 0
@@ -131,10 +132,19 @@ def solution_to_world_to_link_matrix(res: ICPSolution, invert_rot_matrix=False):
     return T
 
 
-def initialize_qd_archive(T, rmse, range_pos_sigma=3):
-    TT = T[:, :3, 3]
+def initialize_qd_archive(T, rmse, range_pos_sigma=3, measure_fn=None):
+    if measure_fn is None:
+        # by default the measure is the translation
+        measure = T[:, :3, 3]
+    else:
+        # measure_fn act on flattened pose representation
+        x = RT_to_continuous_representation(T[:, :3, :3], T[:, :3, 3])
+        measure = measure_fn(x)
+        # ensure the measure is 2D
+        if len(measure.shape) == 1:
+            measure = measure.reshape(1, -1)
     filt = rmse < torch.quantile(rmse, 0.8)
-    pos = TT[filt]
+    pos = measure[filt]
     pos_std = pos.std(dim=-2).cpu().numpy()
     centroid = pos.mean(dim=-2).cpu().numpy()
 
