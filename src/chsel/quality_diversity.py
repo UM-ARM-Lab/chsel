@@ -142,12 +142,44 @@ class CMAES(QDOptimization):
         return R, T, rmse
 
 
+# try measure function on the rotation dimensions
+def rot_measure(measure_dim, offset=0):
+    # ensure the measure is only over the rotation dimensions
+    assert measure_dim + offset <= 6
+
+    def fn(x):
+        return x[..., offset:measure_dim]
+
+    def grad(x):
+        grad = np.zeros((measure_dim, x.shape[-1]))
+        grad[:, offset:measure_dim] = np.eye(measure_dim)
+        grad = np.tile(grad, (x.shape[0], 1, 1))
+        return grad
+
+    return fn, grad
+
+
+def position_measure(measure_dim):
+    def fn(x):
+        return x[..., 6:6 + measure_dim]
+
+    def grad(x):
+        grad = np.zeros((measure_dim, x.shape[-1]))
+        grad[:, 6:6 + measure_dim] = np.eye(measure_dim)
+        grad = np.tile(grad, (x.shape[0], 1, 1))
+        return grad
+
+    return fn, grad
+
+
 class CMAME(QDOptimization):
     def __init__(self, *args, bins=20, iterations=100,
                  # require an explicit range
                  ranges=None,
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
-                 measure_dim=2, # how many dimensions of translation to use, in the order of XYZ
+                 measure_dim=2,  # how many dimensions of translation to use, in the order of XYZ
+                 # custom measure function, overrides measure_dim
+                 measure_fn=None, measure_grad=None,
                  **kwargs):
         self.measure_dim = measure_dim
         if "sigma" not in kwargs:
@@ -164,6 +196,12 @@ class CMAME(QDOptimization):
         self.archive = None
         self.i = 0
         self.qd_scores = []
+
+        self._measure = measure_fn
+        self._measure_grad = measure_grad
+        if self._measure is None:
+            self._measure, self._measure_grad = position_measure(self.measure_dim)
+
         super(CMAME, self).__init__(*args, **kwargs)
 
     def _create_ranges(self):
@@ -184,17 +222,6 @@ class CMAME(QDOptimization):
 
     def is_done(self):
         return self.i >= self.iterations
-
-    def _measure(self, x):
-        # behavior is the xyz translation
-        return x[..., 6:6 + self.measure_dim]
-
-    def _measure_grad(self, x):
-        # measure (aka behavior) is just the translation so jacobian is just identity for the corresponding dimensions
-        grad = np.zeros((self.measure_dim, x.shape[-1]))
-        grad[:, 6:6 + self.measure_dim] = np.eye(self.measure_dim)
-        grad = np.tile(grad, (x.shape[0], 1, 1))
-        return grad
 
     def step(self):
         self.i += 1
