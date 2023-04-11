@@ -121,9 +121,20 @@ class CHSEL:
         self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf, dtype=self.dtype, device=self.device,
                                     **cost_options)
 
+    def evaluate_homogeneous(self, H_world_to_link: torch.tensor, use_scale=False):
+        """
+        Evaluate the discrepency between the observed semantic point cloud and the given transforms (world to link)
+        :return: the cost for each transform
+        """
+        if use_scale:
+            s = H_world_to_link[:, -1, -1]
+        else:
+            s = None
+        return self.evaluate(H_world_to_link[:, :3, :3], H_world_to_link[:, :3, 3], s)
+
     def evaluate(self, R: torch.tensor, T: torch.tensor, s: torch.tensor = None):
         """
-        Evaluate the discrepency between the observed semantic point cloud and the given transforms
+        Evaluate the discrepency between the observed semantic point cloud and the given transforms (world to link)
         :return: the cost for each transform
         """
         return self.volumetric_cost(R, T, s)
@@ -203,7 +214,7 @@ class CHSEL:
         :param batch: number of transforms to estimate, only used if initial_tsf is not specified
         :param debug_func_after_sgd_init: debug function to call after the initial sgd optimization with the CHSEL
         object passed in
-        :return: the registration result and all the archive solutions
+        :return: the registration result (world to link transform matrix) and all the archive solutions
         """
         dim_pts = self.positions.shape[-1]
         known_pts_world_frame = self.positions[self._known]
