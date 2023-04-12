@@ -21,6 +21,10 @@ class RegistrationCost:
     def visualize(self, R, T, s):
         pass
 
+    @property
+    def last_call_info(self):
+        return {}
+
 
 class ComposeCost(RegistrationCost):
     def __init__(self, *args):
@@ -28,6 +32,10 @@ class ComposeCost(RegistrationCost):
 
     def __call__(self, *args, **kwargs):
         return sum(cost(*args, **kwargs) for cost in self.costs)
+
+    @property
+    def last_call_info(self):
+        return {f"{i}": cost.last_call_info for i, cost in enumerate(self.costs)}
 
 
 # Lookup versions of costs do SDF lookups directly which are more expensive but more accurate
@@ -267,6 +275,7 @@ class VolumetricCost(RegistrationCost):
         self.B = None
 
         # intermediate products for visualization purposes
+        self._last_call_info = {}
         self._pts_interior = None
         self._grad = None
 
@@ -278,7 +287,12 @@ class VolumetricCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
+    @property
+    def last_call_info(self):
+        return self._last_call_info
+
     def __call__(self, R, T, s, other_info=None):
+        self._last_call_info = {}
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
@@ -299,11 +313,13 @@ class VolumetricCost(RegistrationCost):
                                                                  self.model_interior_weights,
                                                                  self.free_voxels)
             loss += known_free_space_loss * self.scale_known_freespace
+            self._last_call_info['unscaled_known_free_space_loss'] = known_free_space_loss
         if self.scale_known_sdf != 0:
             known_sdf_voxel_centers, known_sdf_voxel_values = self.sdf_voxels.get_known_pos_and_values()
             known_sdf_loss = KnownSDFVoxelDiffCost.apply(self._pts_all, self.model_all_weights,
                                                          known_sdf_voxel_centers, known_sdf_voxel_values)
             loss += known_sdf_loss * self.scale_known_sdf
+            self._last_call_info['unscaled_known_sdf_loss'] = known_sdf_loss
 
         return loss * self.scale
 
@@ -433,6 +449,7 @@ class VolumetricDirectSDFCost(VolumetricCost):
     """Use SDF queries for the known SDF points instead of using cached grads"""
 
     def __call__(self, R, T, s, other_info=None):
+        self._last_call_info = {}
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
             self.model_interior_points = self.model_interior_points_orig.repeat(self.B, 1, 1)
@@ -448,6 +465,7 @@ class VolumetricDirectSDFCost(VolumetricCost):
                                                                  self.model_interior_weights,
                                                                  self.free_voxels)
             loss += known_free_space_loss * self.scale_known_freespace
+            self._last_call_info["unscaled_known_free_space_loss"] = known_free_space_loss
         if self.scale_known_sdf != 0:
             world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
             known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
@@ -455,6 +473,7 @@ class VolumetricDirectSDFCost(VolumetricCost):
 
             known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
             loss += known_sdf_loss * self.scale_known_sdf
+            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss
 
         return loss * self.scale
 
@@ -508,6 +527,7 @@ class VolumetricDoubleDirectCost(RegistrationCost):
         self.obj_factory = obj_factory
 
     def __call__(self, R, T, s, other_info=None):
+        self._last_call_info = {}
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
@@ -522,6 +542,7 @@ class VolumetricDoubleDirectCost(RegistrationCost):
                                                                                         world_frame_free_voxels)
             known_free_space_loss = FreeSpaceLookupCost.apply(self.sdf, model_frame_free_voxels, self.surface_threshold)
             loss += known_free_space_loss * self.scale_known_freespace
+            self._last_call_info["unscaled_known_free_space_loss"] = known_free_space_loss
         if self.scale_known_sdf != 0:
             world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
             known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
@@ -529,6 +550,7 @@ class VolumetricDoubleDirectCost(RegistrationCost):
 
             known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
             loss += known_sdf_loss * self.scale_known_sdf
+            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss
 
         return loss * self.scale
 
@@ -567,7 +589,14 @@ class DiscreteNondifferentiableCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
+        self._last_call_info = {}
+
+    @property
+    def last_call_info(self):
+        return self._last_call_info
+
     def __call__(self, R, T, s, other_info=None):
+        self._last_call_info = {}
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
             self.B = R.shape[0]
@@ -587,6 +616,7 @@ class DiscreteNondifferentiableCost(RegistrationCost):
             known_free_space_loss = occupied
             known_free_space_loss = known_free_space_loss.sum(dim=-1) / occupied.shape[-1]
             loss += known_free_space_loss * self.scale_known_freespace
+            self._last_call_info["unscaled_known_free_space_loss"] = known_free_space_loss
         if self.scale_known_sdf != 0:
             world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
             model_frame_known_sdf_voxels = self._transform_world_frame_points_to_model_frame(R, T, s,
@@ -596,6 +626,7 @@ class DiscreteNondifferentiableCost(RegistrationCost):
             known_sdf_loss = (sdf_values - known_sdf_values).abs()
             known_sdf_loss = known_sdf_loss.mean(dim=-1)
             loss += known_sdf_loss * self.scale_known_sdf
+            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss
 
         return loss * self.scale
 
