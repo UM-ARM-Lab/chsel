@@ -144,6 +144,8 @@ class CHSEL:
         """
         Update the observed point cloud and semantics
         """
+        if len(positions) == 0:
+            return
         _free = torch.tensor([s == chsel.SemanticsClass.FREE for s in semantics])
         _occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in semantics])
         _known = ~_free & ~_occupied
@@ -153,6 +155,7 @@ class CHSEL:
         self.positions = torch.cat([self.positions, positions])
         self.volumetric_cost.free_voxels[positions[_free]] = 1
         semantics = np.asarray(semantics, dtype=object)
+        self.semantics = np.concatenate([self.semantics, semantics])
         if torch.any(_known):
             # special edge case for updating with only a single point, np interprets true as index 1
             if len(_known) == 1:
