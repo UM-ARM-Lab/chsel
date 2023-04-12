@@ -92,6 +92,7 @@ class CHSEL:
         self.res_init = None
         self.qd = None
         self.res_history = []
+        self.res_init_history = []
 
         self._qd_alg_kwargs = {"measure_dim": qd_measure_dim,
                                "measure_fn": qd_measure_fn,
@@ -192,11 +193,13 @@ class CHSEL:
         res = None
         all_solutions = None
         self.res_history = []
+        self.res_init_history = []
         for i in range(iterations):
             res, all_solutions = self.register_single(initial_tsf=initial_tsf,
                                                       low_cost_transform_set=low_cost_transform_set,
                                                       **kwargs)
             self.res_history.append(res)
+            self.res_init_history.append(self.res_init)
             world_to_link = registration_util.solution_to_world_to_link_matrix(res)
 
             # TODO auto select reinitialization policy based on RMSE distribution
