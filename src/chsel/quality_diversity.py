@@ -263,6 +263,11 @@ class CMAME(QDOptimization):
         if len(solutions) > self.B:
             order = np.argpartition(-objectives, self.B)
             solutions = solutions[order[:self.B]]
+        # if there are fewer than B solutions, randomly sample the remaining ones from existing solutions
+        elif len(solutions) < self.B:
+            # sample from existing solutions with replacement by index
+            resampled_indices = np.random.choice(np.arange(len(solutions)), self.B - len(solutions))
+            solutions = np.concatenate([solutions, solutions[resampled_indices]], axis=0)
         # convert back to R, T
         R, T = self.get_torch_RT(solutions)
         rmse = self.registration_cost(R, T, s)
