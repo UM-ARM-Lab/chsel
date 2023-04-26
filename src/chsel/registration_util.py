@@ -7,6 +7,9 @@ from matplotlib import pyplot as plt, cm as cm
 from ribs.visualize import grid_archive_heatmap
 from chsel.types import SimilarityTransform, ICPSolution
 from chsel.conversion import RT_to_continuous_representation
+import logging
+
+logger = logging.getLogger(__file__)
 
 poke_index = 0
 sgd_index = 0
@@ -147,8 +150,14 @@ def initialize_qd_archive(T, rmse, outlier_ratio=5.0, range_sigma=3, measure_fn=
     # filter out any solution that is above outlier_ratio of the best solution found
     keep = rmse < rmse.min() * outlier_ratio
     m = measure[keep]
-    m_std = m.std(dim=-2).cpu().numpy()
+    logger.info(f"keep {len(m)} solutions out of {len(measure)} for QD initialization")
+
     centroid = m.mean(dim=-2).cpu().numpy()
+    if len(m) == 1:
+        epsilon = 1e-4
+        m_std = epsilon * np.ones_like(centroid)
+    else:
+        m_std = m.std(dim=-2).cpu().numpy()
 
     # diff = pos - pos.mean(dim=-2)
     # s = diff.square().sum()
