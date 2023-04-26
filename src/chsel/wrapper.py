@@ -71,7 +71,7 @@ class CHSEL:
         :param debug:
         """
         self.obj_sdf = obj_sdf
-        self.sgd_solution_outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
+        self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
 
         self.dtype = positions.dtype
         self.device = positions.device
@@ -245,7 +245,7 @@ class CHSEL:
         # filter outliers out based on RMSE
         T = registration_util.solution_to_world_to_link_matrix(self.res_init)
         archive_range = registration_util.initialize_qd_archive(T, self.res_init.rmse,
-                                                                outlier_ratio=self.sgd_solution_outlier_rejection_ratio,
+                                                                outlier_ratio=self.outlier_rejection_ratio,
                                                                 range_sigma=self.archive_range_sigma,
                                                                 measure_fn=self._qd_alg_kwargs.get('measure_fn', None))
         logger.info("QD position bins %s %s", self.bins, archive_range)
@@ -256,6 +256,7 @@ class CHSEL:
         # run QD
         self.qd = self.qd_alg(self.volumetric_cost, known_pts_world_frame.repeat(batch, 1, 1),
                               init_transform=initial_tsf,
+                              outlier_ratio=self.outlier_rejection_ratio,
                               iterations=self.qd_iterations, num_emitters=1, bins=self.bins,
                               ranges=archive_range, savedir=self.savedir, **self._qd_alg_kwargs)
 

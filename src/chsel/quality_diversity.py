@@ -177,6 +177,7 @@ class CMAME(QDOptimization):
     def __init__(self, *args, bins=20, iterations=100,
                  # require an explicit range
                  ranges=None,
+                 outlier_ratio=5.0,  # reject solutions that are this many times worse than the best
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
                  measure_dim=2,  # how many dimensions of translation to use, in the order of XYZ
                  # custom measure function, overrides measure_dim
@@ -193,6 +194,7 @@ class CMAME(QDOptimization):
         self.iterations = iterations
         self.ranges = ranges
         self.qd_score_offset = qd_score_offset
+        self.outlier_ratio = outlier_ratio
 
         self.archive = None
         self.i = 0
@@ -260,8 +262,15 @@ class CMAME(QDOptimization):
         df = self.archive.as_pandas()
         objectives = df.objective_batch()
         solutions = df.solution_batch()
+
+        cost = -objectives
+        # filter out all solutions that are more than outlier_ratio times worse than the best
+        lowest_cost = np.min(cost)
+        inlier_mask = cost < lowest_cost * self.outlier_ratio
+        solutions = solutions[inlier_mask]
+        cost = cost[inlier_mask]
         if len(solutions) > self.B:
-            order = np.argpartition(-objectives, self.B)
+            order = np.argpartition(cost, self.B)
             solutions = solutions[order[:self.B]]
         # if there are fewer than B solutions, randomly sample the remaining ones from existing solutions
         elif len(solutions) < self.B:

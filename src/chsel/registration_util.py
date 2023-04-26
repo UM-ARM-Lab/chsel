@@ -135,7 +135,7 @@ def solution_to_world_to_link_matrix(res: ICPSolution, invert_rot_matrix=False):
     return T
 
 
-def initialize_qd_archive(T, rmse, outlier_ratio=5.0, range_sigma=3, measure_fn=None):
+def initialize_qd_archive(T, rmse, outlier_ratio=5.0, range_sigma=3, min_std=1e-4, measure_fn=None):
     if measure_fn is None:
         # by default the measure is the translation
         measure = T[:, :3, 3]
@@ -154,14 +154,10 @@ def initialize_qd_archive(T, rmse, outlier_ratio=5.0, range_sigma=3, measure_fn=
 
     centroid = m.mean(dim=-2).cpu().numpy()
     if len(m) == 1:
-        epsilon = 1e-4
-        m_std = epsilon * np.ones_like(centroid)
+        m_std = min_std * np.ones_like(centroid)
     else:
         m_std = m.std(dim=-2).cpu().numpy()
-
-    # diff = pos - pos.mean(dim=-2)
-    # s = diff.square().sum()
-    # pos_total_std = (s / len(pos)).sqrt().cpu().numpy()
+        m_std = np.maximum(m_std, min_std)
 
     # extract translation measure
     centroid = centroid
