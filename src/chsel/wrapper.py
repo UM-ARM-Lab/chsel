@@ -28,6 +28,7 @@ class CHSEL:
                  occupied_voxels: Optional[pv.Voxels] = None,
                  known_sdf_voxels: Optional[pv.Voxels] = None,
                  free_voxels_resolution=0.01,
+                 sgd_solution_outlier_rejection_ratio=5.0,
                  archive_range_sigma=3,
                  bins=40,
                  qd_iterations=100,
@@ -52,6 +53,8 @@ class CHSEL:
         :param known_sdf_voxels: Similarly to the above
         :param free_voxels_resolution: Resolution in meters of the side-length of each voxel; this should scale with
         the object's size; it is a good idea that at least 10 voxels span each dimension of the object
+        :param sgd_solution_outlier_rejection_ratio: The ratio of CHSEL cost function to the best one found, above which
+        to be considered an outlier and rejected. This is used to prevent the archive range being polluted with outliers
         :param archive_range_sigma: b_sigma the number of standard deviations to consider for the archive
         :param bins: How many bins each dimension of the archive will have
         :param qd_iterations: n_o number of quality diversity optimization iterations
@@ -68,6 +71,7 @@ class CHSEL:
         :param debug:
         """
         self.obj_sdf = obj_sdf
+        self.sgd_solution_outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
 
         self.dtype = positions.dtype
         self.device = positions.device
@@ -188,7 +192,7 @@ class CHSEL:
         """
         Register the semantic point cloud to the given object SDF
         :param iterations: number of iterations to run
-        :param initial_tsf: T_0 initial transform to use for the optimization
+        :param initial_tsf: T_0 initial world to link transform to use for the optimization
         :param low_cost_transform_set: T_l low cost transform set such as from the previous iteration
         :param kwargs: arguments to pass to register_single
         :return: the registration result and all the archive solutions
@@ -241,7 +245,8 @@ class CHSEL:
         # filter outliers out based on RMSE
         T = registration_util.solution_to_world_to_link_matrix(self.res_init)
         archive_range = registration_util.initialize_qd_archive(T, self.res_init.rmse,
-                                                                range_pos_sigma=self.archive_range_sigma,
+                                                                outlier_ratio=self.sgd_solution_outlier_rejection_ratio,
+                                                                range_sigma=self.archive_range_sigma,
                                                                 measure_fn=self._qd_alg_kwargs.get('measure_fn', None))
         logger.info("QD position bins %s %s", self.bins, archive_range)
 

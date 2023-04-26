@@ -132,7 +132,7 @@ def solution_to_world_to_link_matrix(res: ICPSolution, invert_rot_matrix=False):
     return T
 
 
-def initialize_qd_archive(T, rmse, range_pos_sigma=3, measure_fn=None):
+def initialize_qd_archive(T, rmse, outlier_ratio=5.0, range_sigma=3, measure_fn=None):
     if measure_fn is None:
         # by default the measure is the translation
         measure = T[:, :3, 3]
@@ -143,10 +143,12 @@ def initialize_qd_archive(T, rmse, range_pos_sigma=3, measure_fn=None):
         # ensure the measure is 2D
         if len(measure.shape) == 1:
             measure = measure.reshape(1, -1)
-    filt = rmse < torch.quantile(rmse, 0.8)
-    pos = measure[filt]
-    pos_std = pos.std(dim=-2).cpu().numpy()
-    centroid = pos.mean(dim=-2).cpu().numpy()
+
+    # filter out any solution that is above outlier_ratio of the best solution found
+    keep = rmse < rmse.min() * outlier_ratio
+    m = measure[keep]
+    m_std = m.std(dim=-2).cpu().numpy()
+    centroid = m.mean(dim=-2).cpu().numpy()
 
     # diff = pos - pos.mean(dim=-2)
     # s = diff.square().sum()
@@ -154,6 +156,6 @@ def initialize_qd_archive(T, rmse, range_pos_sigma=3, measure_fn=None):
 
     # extract translation measure
     centroid = centroid
-    pos_std = pos_std
-    ranges = np.array((centroid - pos_std * range_pos_sigma, centroid + pos_std * range_pos_sigma)).T
+    m_std = m_std
+    ranges = np.array((centroid - m_std * range_sigma, centroid + m_std * range_sigma)).T
     return ranges
