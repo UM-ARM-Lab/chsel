@@ -32,7 +32,7 @@ def test_chsel_on_drill():
     # if it's false then it will be interactable and you can rotate it yourself or close the window
     record_video = False
     d = "cuda" if torch.cuda.is_available() else "cpu"
-    seed(1)
+    seed(2)
     # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
     obj = pv.MeshObjectFactory(os.path.join(TEST_DIR, "YcbPowerDrill/textured_simple_reoriented.obj"))
     sdf = pv.MeshSDF(obj)
@@ -172,9 +172,9 @@ def test_chsel_on_drill():
 
     # try to use the ground truth transform as the initial guess
     # gt_init = chsel.reinitialize_transform_estimates(B, gt_tf.inverse().get_matrix()[0])
-    # res, all_solutions = registration.register(terations=15, batch=B, initial_tsf=gt_init)
-
+    # res, all_solutions = registration.register(iterations=15, batch=B, initial_tsf=gt_init)
     res, all_solutions = registration.register(iterations=15, batch=B, initial_tsf=random_init_tsf)
+    print("Showing each iteration of the registration result")
     for i in range(len(registration.res_history)):
         # print the sorted RMSE for each iteration
         print(torch.sort(registration.res_history[i].rmse).values)
@@ -190,6 +190,7 @@ def test_chsel_on_drill():
         if compare_against_icp:
             from pytorch3d.ops.points_alignment import iterative_closest_point
 
+            print("Compare against ICP")
             pcd = obj._mesh.sample_points_uniformly(number_of_points=500)
             model_points_register = torch.tensor(np.asarray(pcd.points), device=d, dtype=torch.float)
 
