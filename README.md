@@ -3,12 +3,26 @@ TODO PyPI after making repository public
 
 For development, clone repository somewhere, then `pip3 install -e .` to install in editable mode.
 
+## Citation
+If you use it, please cite
 
+```bibtex
+@inproceedings{zhong2023chsel,
+  title={CHSEL: Producing Diverse Plausible Pose Estimates from Contact and Free Space Data},
+  author={Zhong, Sheng and Fazeli, Nima and Berenson, Dmitry},
+  booktitle={Robotics science and systems},
+  year={2023}
+}
+```
+
+To reproduce the results from the paper, see the 
+[experiments repository](https://github.com/UM-ARM-Lab/chsel_experiments).
 
 ## Usage
 CHSEL registers an observed semantic point cloud against a target object's signed distance field (SDF).
+It is agnostic to how the semantic point cloud is obtained, which can come from cameras and tactile sensors for example.
 
-First you need an object frame SDF which you can generate from its mesh
+First you need an object frame SDF which you can generate from its 3D mesh
 ```python
 import pytorch_volumetric as pv
 
