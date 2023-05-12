@@ -24,102 +24,69 @@ logging.basicConfig(level=logging.INFO, force=True,
                     format='[%(levelname)s %(asctime)s %(pathname)s:%(lineno)d] %(message)s',
                     datefmt='%m-%d %H:%M:%S')
 
+visualize = True
+compare_against_icp = True
+# if record video is true then the visualization will always rotate one rotation to allow for looping gifs
+# if it's false then it will be interactable and you can rotate it yourself or close the window
+record_video = False
+d = "cuda" if torch.cuda.is_available() else "cpu"
 
-def test_chsel_on_drill():
-    visualize = True
-    compare_against_icp = True
-    # if record video is true then the visualization will always rotate one rotation to allow for looping gifs
-    # if it's false then it will be interactable and you can rotate it yourself or close the window
-    record_video = False
-    d = "cuda" if torch.cuda.is_available() else "cpu"
-    seed(2)
-    # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
-    obj = pv.MeshObjectFactory(os.path.join(TEST_DIR, "YcbPowerDrill/textured_simple_reoriented.obj"))
-    sdf = pv.MeshSDF(obj)
+# for rotating the visualization the first time we enter to get a better angle
+first_rotate = False
 
-    # get some points in a grid in the object frame (can get points through other means)
-    # this is only around one part of the object to simulate the local nature of contacts
-    query_range = np.array([
-        [0.04, 0.15],
-        [0.04, 0.15],
-        [0.1, 0.25],
-    ])
 
-    coords, pts = pv.get_coordinates_and_points_in_grid(0.005, query_range, device=d)
+def rotate_view(vis):
+    global first_rotate
+    ctr = vis.get_view_control()
+    if first_rotate is False:
+        ctr.rotate(0.0, -540.0)
+        first_rotate = True
+    ctr.rotate(5.0, 0.0)
+    return False
 
-    # randomly permute points so they are not in order
-    pts = pts[torch.randperm(len(pts))]
 
-    sdf_val, sdf_grad = sdf(pts)
-    # assuming we only observe surface points, set thresholds for known free and known occupied
-    # note that this is the most common case, but you can know non-zero (non-surface) SDF values
-    known_free = sdf_val > 0.005
-    known_occupied = sdf_val < -0.005
-    known_sdf = ~known_free & ~known_occupied
+def draw_geometries_one_rotation(geometries):
+    global first_rotate
+    if not record_video:
+        o3d.visualization.draw_geometries_with_animation_callback(geometries, rotate_view)
+    else:
+        # open3d visualize geo non-blocking
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+        for item in geometries:
+            vis.add_geometry(item)
 
-    # randomly downsample (we randomly permutated before) to simulate getting partial observations
-    N = 100
-    # retrieve batch of 30 transforms
+        # unfortunately the rotation isn't specified in terms of angles but in terms of mouse drag units
+        orbit_period = 7.5 * 224 / 242
+
+        # run the recording in the background
+        time.sleep(0.1)
+        recorder = subprocess.Popen(
+            ["python", os.path.join(TEST_DIR, "record_video.py"), "Open3D", str(orbit_period)])
+
+        start = timer()
+        while True:
+            vis.poll_events()
+            vis.update_renderer()
+            if rotate_view(vis):
+                break
+            if timer() - start > orbit_period + 0.1:
+                break
+        first_rotate = False
+        recorder.wait()
+        logger.info("recording finished")
+
+
+def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
     B = 30
-
-    # group and stack the points together
-    # note that it will still work even if you don't have all 3 or even 2 classes
-    # for example with only known surface points, it degenerates to a form of ICP
-    # we also don't need balanced data from each class
-    pts_free = pts[known_free][:N]
-    pts_occupied = pts[known_occupied][:N]
-    pts_sdf = pts[known_sdf][:N]
-    sem_free = [chsel.SemanticsClass.FREE for _ in pts_free]
-    sem_occupied = [chsel.SemanticsClass.OCCUPIED for _ in pts_occupied]
-    sem_sdf = sdf_val[known_sdf][:N]
-    # sem_sdf = torch.zeros(len(pts_sdf), device=d)
-
-    positions = torch.cat((pts_free, pts_occupied, pts_sdf))
-    semantics = sem_free + sem_occupied + sem_sdf.tolist()
-
-    first_rotate = False
-
-    def rotate_view(vis):
-        nonlocal first_rotate
-        ctr = vis.get_view_control()
-        if first_rotate is False:
-            ctr.rotate(0.0, -540.0)
-            first_rotate = True
-        ctr.rotate(5.0, 0.0)
-        return False
-
-    def draw_geometries_one_rotation(geometries):
-        nonlocal first_rotate
-        if not record_video:
-            o3d.visualization.draw_geometries_with_animation_callback(geometries, rotate_view)
-        else:
-            # open3d visualize geo non-blocking
-            vis = o3d.visualization.Visualizer()
-            vis.create_window()
-            for item in geometries:
-                vis.add_geometry(item)
-
-            # unfortunately the rotation isn't specified in terms of angles but in terms of mouse drag units
-            orbit_period = 7.5 * 224 / 242
-
-            # run the recording in the background
-            time.sleep(0.1)
-            recorder = subprocess.Popen(
-                ["python", os.path.join(TEST_DIR, "record_video.py"), "Open3D", str(orbit_period)])
-
-            start = timer()
-            while True:
-                vis.poll_events()
-                vis.update_renderer()
-                if rotate_view(vis):
-                    break
-                if timer() - start > orbit_period + 0.1:
-                    break
-            first_rotate = False
-            recorder.wait()
-            logger.info("recording finished")
+    _free = torch.tensor([s == chsel.SemanticsClass.FREE for s in semantics])
+    _occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in semantics])
+    _known = ~_free & ~_occupied
 
     if visualize:
+        pts_free = positions_obj_frame[_free]
+        pts_occupied = positions_obj_frame[_occupied]
+        pts_sdf = positions_obj_frame[_known]
         # plot object and points
         # have to convert the pts to o3d point cloud
         pc_free = o3d.geometry.PointCloud()
@@ -139,16 +106,18 @@ def test_chsel_on_drill():
     import pytorch_kinematics as pk
 
     gt_tf = pk.Transform3d(pos=torch.randn(3, device=d), rot=pk.random_rotation(device=d), device=d)
-    positions = gt_tf.transform_points(positions)
+    positions = gt_tf.transform_points(positions_obj_frame)
 
     # visualize the transformed mesh and points
     if visualize:
         link_to_world_gt = gt_tf.get_matrix()[0]
         tf_mesh = copy.deepcopy(obj._mesh).transform(link_to_world_gt.cpu().numpy())
+        pts_free = positions[_free]
+        pts_sdf = positions[_known]
 
         # only plotting the transformed known SDF points for clarity
-        pc_free.points = o3d.utility.Vector3dVector(positions[:N].cpu())
-        pc_sdf.points = o3d.utility.Vector3dVector(positions[2 * N:].cpu())
+        pc_free.points = o3d.utility.Vector3dVector(pts_free.cpu())
+        pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu())
         draw_geometries_one_rotation([tf_mesh, pc_free, pc_sdf])
 
     def visualize_transforms(link_to_world):
@@ -202,7 +171,7 @@ def test_chsel_on_drill():
                                               torch.ones(B, device=d, dtype=model_points_register.dtype))
 
             # known_sdf_pts represent the partial observation
-            known_sdf_pts = positions[2 * N:]
+            known_sdf_pts = positions[_known]
             # test with full observation (1-1 correspondence to the registered points)
             full_model_points_in_world = gt_tf.transform_points(model_points_register)
 
@@ -245,6 +214,54 @@ def test_chsel_on_drill():
         print(torch.sort(res.rmse))
         visualize_transforms(link_to_world)
     """
+
+
+def test_chsel_on_drill():
+    seed(2)
+    # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
+    obj = pv.MeshObjectFactory(os.path.join(TEST_DIR, "YcbPowerDrill/textured_simple_reoriented.obj"))
+    sdf = pv.MeshSDF(obj)
+
+    # get some points in a grid in the object frame (can get points through other means)
+    # this is only around one part of the object to simulate the local nature of contacts
+    query_range = np.array([
+        [0.04, 0.15],
+        [0.04, 0.15],
+        [0.1, 0.25],
+    ])
+
+    coords, pts = pv.get_coordinates_and_points_in_grid(0.005, query_range, device=d)
+
+    # randomly permute points so they are not in order
+    pts = pts[torch.randperm(len(pts))]
+
+    sdf_val, sdf_grad = sdf(pts)
+    # assuming we only observe surface points, set thresholds for known free and known occupied
+    # note that this is the most common case, but you can know non-zero (non-surface) SDF values
+    known_free = sdf_val > 0.005
+    known_occupied = sdf_val < -0.005
+    known_sdf = ~known_free & ~known_occupied
+
+    # randomly downsample (we randomly permutated before) to simulate getting partial observations
+    N = 100
+    # retrieve batch of 30 transforms
+    B = 30
+
+    # group and stack the points together
+    # note that it will still work even if you don't have all 3 or even 2 classes
+    # for example with only known surface points, it degenerates to a form of ICP
+    # we also don't need balanced data from each class
+    pts_free = pts[known_free][:N]
+    pts_occupied = pts[known_occupied][:N]
+    pts_sdf = pts[known_sdf][:N]
+    sem_free = [chsel.SemanticsClass.FREE for _ in pts_free]
+    sem_occupied = [chsel.SemanticsClass.OCCUPIED for _ in pts_occupied]
+    sem_sdf = sdf_val[known_sdf][:N]
+    # sem_sdf = torch.zeros(len(pts_sdf), device=d)
+
+    positions = torch.cat((pts_free, pts_occupied, pts_sdf))
+    semantics = sem_free + sem_occupied + sem_sdf.tolist()
+    test_chsel_on_obj(obj, sdf, positions, semantics)
 
 
 if __name__ == "__main__":
