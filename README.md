@@ -1,3 +1,7 @@
+![final](https://i.imgur.com/bxdpgpk.gif)
+![mug](https://i.imgur.com/z56ljSH.gif)
+Demo CHSEL results on drill with sparse contact data (left) and mug with dense vision data (right).
+
 ## Installation
 TODO PyPI after making repository public
 
@@ -21,6 +25,8 @@ To reproduce the results from the paper, see the
 ## Usage
 CHSEL registers an observed semantic point cloud against a target object's signed distance field (SDF).
 It is agnostic to how the semantic point cloud is obtained, which can come from cameras and tactile sensors for example.
+
+Example code is given in `tests/test_wrapper.py`.
 
 First you need an object frame SDF which you can generate from its 3D mesh
 ```python
