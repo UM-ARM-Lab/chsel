@@ -1,8 +1,8 @@
 ![final](https://i.imgur.com/bxdpgpk.gif)
 
-![mug](https://i.imgur.com/z56ljSH.gif)
+![mug](https://i.imgur.com/gbBBQpB.gif)
 
-Demo CHSEL results on drill with sparse contact data (left) and mug with dense vision data (right).
+Demo CHSEL results on drill with sparse contact data (top) and mug with dense vision data (bottom).
 
 ## Installation
 TODO PyPI after making repository public
