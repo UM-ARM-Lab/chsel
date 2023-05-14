@@ -1,6 +1,6 @@
-![final](https://i.imgur.com/bxdpgpk.gif)
+## CHSEL: Producing Diverse Plausible Pose Estimates from Contact and Free Space Data
 
-![mug](https://i.imgur.com/gbBBQpB.gif)
+![combined demo](https://i.imgur.com/T4DnKDu.gif)
 
 Demo CHSEL results on drill with sparse contact data (top) and mug with dense vision data (bottom).
 
