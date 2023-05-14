@@ -5,7 +5,9 @@
 Demo CHSEL results on drill with sparse contact data (top) and mug with dense vision data (bottom).
 
 ## Installation
-TODO PyPI after making repository public
+```bash
+pip install chsel
+```
 
 For development, clone repository somewhere, then `pip3 install -e .` to install in editable mode.
 
