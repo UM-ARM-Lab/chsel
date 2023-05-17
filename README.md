@@ -11,6 +11,10 @@ pip install chsel
 
 For development, clone repository somewhere, then `pip3 install -e .` to install in editable mode.
 
+## Links
+- [arxiv](https://arxiv.org/abs/2305.08042)
+- [website](https://johnsonzhong.me/projects/chsel/)
+
 ## Citation
 If you use it, please cite
 
