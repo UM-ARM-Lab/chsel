@@ -1,10 +1,12 @@
 import copy
 import os
+import sys
 import numpy as np
 import torch
 import open3d as o3d
 
 import chsel
+import pytorch_kinematics as pk
 import pytorch_volumetric as pv
 from pytorch_seed import seed
 
@@ -25,7 +27,10 @@ logging.basicConfig(level=logging.INFO, force=True,
                     datefmt='%m-%d %H:%M:%S')
 
 visualize = True
+visualize_after_each_iteration = True
 compare_against_icp = True
+# number of transforms to estimate at one time
+B = 30
 # if record video is true then the visualization will always rotate one rotation to allow for looping gifs
 # if it's false then it will be interactable and you can rotate it yourself or close the window
 record_video = False
@@ -78,7 +83,6 @@ def draw_geometries_one_rotation(geometries):
 
 
 def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
-    B = 30
     _free = torch.tensor([s == chsel.SemanticsClass.FREE for s in semantics])
     _occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in semantics])
     _known = ~_free & ~_occupied
@@ -101,9 +105,9 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
         pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu().numpy())
         pc_sdf.paint_uniform_color([0, 0.706, 1])
 
+        print(f"visualize object mesh, free space points (orange), and known SDF points (blue) (press Q or the close window button to move on)")
         draw_geometries_one_rotation([obj._mesh, pc_free, pc_occupied, pc_sdf])
 
-    import pytorch_kinematics as pk
 
     gt_tf = pk.Transform3d(pos=torch.randn(3, device=d), rot=pk.random_rotation(device=d), device=d)
     positions = gt_tf.transform_points(positions_obj_frame)
@@ -118,6 +122,7 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
         # only plotting the transformed known SDF points for clarity
         pc_free.points = o3d.utility.Vector3dVector(pts_free.cpu())
         pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu())
+        print(f"visualize the transformed object mesh, free space points, and known SDF points (press Q or the close window button to move on)")
         draw_geometries_one_rotation([tf_mesh, pc_free, pc_sdf])
 
     def visualize_transforms(link_to_world):
@@ -142,17 +147,40 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
     # try to use the ground truth transform as the initial guess
     # gt_init = chsel.reinitialize_transform_estimates(B, gt_tf.inverse().get_matrix()[0])
     # res, all_solutions = registration.register(iterations=15, batch=B, initial_tsf=gt_init)
-    res, all_solutions = registration.register(iterations=15, batch=B, initial_tsf=random_init_tsf)
-    print("Showing each iteration of the registration result")
-    for i in range(len(registration.res_history)):
-        # print the sorted RMSE for each iteration
-        print(torch.sort(registration.res_history[i].rmse).values)
+    iterations = 15
+    if visualize_after_each_iteration:
+        world_to_link = random_init_tsf
+        all_solutions = None
+        # refine the solutions
+        for i in range(iterations):
+            print(f"iteration {i}")
+            start = timer()
+            # assuming the object hasn't moved, use the output of the previous iteration as the initial estimate
+            res, all_solutions = registration.register(initial_tsf=world_to_link, batch=B,
+                                                       low_cost_transform_set=all_solutions)
+            print(f"registration took {timer() - start} seconds")
 
-        # res.RTs.R, res.RTs.T, res.RTs.s are the similarity transform parameters
-        # get 30 4x4 transform matrix for homogeneous coordinates
-        world_to_link = chsel.solution_to_world_to_link_matrix(registration.res_history[i])
-        link_to_world = world_to_link.inverse()
-        visualize_transforms(link_to_world)
+            world_to_link = chsel.solution_to_world_to_link_matrix(res)
+            link_to_world = world_to_link.inverse()
+            # print sorted rmse
+            print(torch.sort(res.rmse))
+            visualize_transforms(link_to_world)
+
+            # reinitialize world_to_link around elites
+            world_to_link = chsel.reinitialize_transform_around_elites(world_to_link, res.rmse)
+    else:
+        res, all_solutions = registration.register(iterations=iterations, batch=B, initial_tsf=random_init_tsf)
+        print("Showing each iteration of the registration result (press Q or the close window button to move on)")
+        for i in range(len(registration.res_history)):
+            # print the sorted RMSE for each iteration
+            print(f"iteration {i}")
+            print(torch.sort(registration.res_history[i].rmse).values)
+
+            # res.RTs.R, res.RTs.T, res.RTs.s are the similarity transform parameters
+            # get 30 4x4 transform matrix for homogeneous coordinates
+            world_to_link = chsel.solution_to_world_to_link_matrix(registration.res_history[i])
+            link_to_world = world_to_link.inverse()
+            visualize_transforms(link_to_world)
 
     # try ICP on this problem for comparison
     try:
@@ -191,33 +219,11 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
         print("Install pytorch3d to run ICP")
 
     # manually do single step registrations (iterations=1 essentially)
-    """
-    world_to_link = chsel.solution_to_world_to_link_matrix(res)
-    link_to_world = world_to_link.inverse()
-    # can evaluate the cost of each transform
-    print(res.rmse)
-    visualize_transforms(link_to_world)
-
-    # refine the solutions
-    iterations = 10
-    for i in range(iterations):
-        # reinitialize world_to_link around elites
-        world_to_link = chsel.reinitialize_transform_around_elites(world_to_link, res.rmse)
-
-        # assuming the object hasn't moved, use the output of the previous iteration as the initial estimate
-        res, all_solutions = registration.register(initial_tsf=world_to_link, batch=B,
-                                                   low_cost_transform_set=all_solutions)
-
-        world_to_link = chsel.solution_to_world_to_link_matrix(res)
-        link_to_world = world_to_link.inverse()
-        # print sorted rmse
-        print(torch.sort(res.rmse))
-        visualize_transforms(link_to_world)
-    """
 
 
-def test_chsel_on_drill():
-    seed(2)
+
+def test_chsel_on_drill(rng_seed=3):
+    seed(rng_seed)
     # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
     obj = pv.MeshObjectFactory(os.path.join(TEST_DIR, "YcbPowerDrill/textured_simple_reoriented.obj"))
     sdf = pv.MeshSDF(obj)
@@ -244,8 +250,6 @@ def test_chsel_on_drill():
 
     # randomly downsample (we randomly permutated before) to simulate getting partial observations
     N = 100
-    # retrieve batch of 30 transforms
-    B = 30
 
     # group and stack the points together
     # note that it will still work even if you don't have all 3 or even 2 classes
@@ -265,4 +269,8 @@ def test_chsel_on_drill():
 
 
 if __name__ == "__main__":
-    test_chsel_on_drill()
+    rng_seed = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    print(f"Using random seed {rng_seed}; try running with different seeds to see different results with\npython tests/test_wrapper.py <seed>")
+    if not torch.cuda.is_available():
+        print("Warning: CUDA not available, running on CPU which may be much slower")
+    test_chsel_on_drill(rng_seed)
