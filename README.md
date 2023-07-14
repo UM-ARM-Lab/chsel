@@ -30,6 +30,31 @@ If you use it, please cite
 To reproduce the results from the paper, see the 
 [experiments repository](https://github.com/UM-ARM-Lab/chsel_experiments).
 
+## Intuition
+### Cost
+* enforce an object's signed distance field (SDF) consistency against point clouds augmented with volumetric semantics
+    * whether a point is in free space, inside the object, or has a known SDF value 
+* two of those semantics classes encodes uncertainty about the observed point's SDF
+    * for example free space just means we know the point has SDF > 0, but makes no claim about its actual value
+    * in many observation scenarios, we do not know the observed' point's actual SDF value
+* compared to related methods like SDF2SDF that match an SDF against another SDF, this avoids bias
+
+### Optimization
+At a high level, our method can be summarized as:
+1. start with an initial set of transforms that ideally covers all local minima
+   * for every local minima, there exists a transform in the initial set that is in its attraction basin in terms of the local cost landscape
+3. find the bounds of the local minima landscape
+    * usually much smaller than the whole search space
+    * do this by performing gradient descent independently on each initial transform with our given cost
+4. consider search in a dimensionality reduced feature space
+    * translational component of the transform such that we consider the best rotation for each translation
+6. find good local minima with a fine-tuning search with the search space reduced to the local minima bounds that we found to afford higher resolution
+    * instead of finding the best local minima, we want to evaluate all local minima, and we do this with Quality Diversity optimization on the feature space
+    * we maintain an archive, a grid in feature space, each cell of which holds the best solution given that archive (so the grid is in translation space, and each cell holds a full transform)
+    * we populate this archive over the course of QD optimization, which evolutionarily combines the top solutions
+7. we return the transforms from the best scoring cells, as many as requested
+    * usually same number as in the input transform set
+
 ## Usage
 CHSEL registers an observed semantic point cloud against a target object's signed distance field (SDF).
 It is agnostic to how the semantic point cloud is obtained, which can come from cameras and tactile sensors for example.
