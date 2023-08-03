@@ -13,6 +13,19 @@ def RT_to_continuous_representation(R, T):
 def continuous_representation_to_RT(x, device='cpu', dtype=torch.float):
     q_ = x[..., :6]
     t = x[..., 6:]
+    if torch.is_tensor(x):
+        device = x.device
+        dtype = x.dtype
     qq, TT = ensure_tensor(device, dtype, q_, t)
     RR = rotation_6d_to_matrix(qq)
     return RR, TT
+
+
+def continuous_representation_to_H(x, **kwargs):
+    RR, TT = continuous_representation_to_RT(x, **kwargs)
+    device = RR.device
+    dtype = RR.dtype
+    H = torch.eye(4, device=device, dtype=dtype).repeat(RR.shape[0], 1, 1)
+    H[:, :3, :3] = RR
+    H[:, :3, 3] = TT
+    return H
