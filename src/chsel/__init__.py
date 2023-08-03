@@ -4,5 +4,6 @@ from chsel.registration_util import solution_to_world_to_link_matrix, apply_simi
 from chsel.costs import VolumetricCost, VolumetricDirectSDFCost, VolumetricDoubleDirectCost
 from chsel.initialization import reinitialize_transform_estimates, random_rotation_perturbations, \
     reinitialize_transform_around_elites
-from chsel.conversion import continuous_representation_to_RT, RT_to_continuous_representation
+from chsel.conversion import continuous_representation_to_RT, RT_to_continuous_representation, \
+    continuous_representation_to_H
 from chsel.quality_diversity import rot_measure, position_measure, CMAME, CMAMEGA, CMAES

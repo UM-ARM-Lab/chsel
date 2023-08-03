@@ -1,4 +1,4 @@
-from typing import Sequence, Optional
+from typing import Sequence, Optional, Union
 
 import math
 import chsel
@@ -126,11 +126,13 @@ class CHSEL:
         self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf, dtype=self.dtype, device=self.device,
                                     **cost_options)
 
-    def evaluate_homogeneous(self, H_world_to_link: torch.tensor, use_scale=False):
+    def evaluate_homogeneous(self, H_world_to_link: Union[torch.tensor, pk.Transform3d], use_scale=False):
         """
         Evaluate the discrepency between the observed semantic point cloud and the given transforms (world to link)
         :return: the cost for each transform
         """
+        if not torch.is_tensor(H_world_to_link):
+            H_world_to_link = H_world_to_link.get_matrix()
         if use_scale:
             s = H_world_to_link[:, -1, -1]
         else:
