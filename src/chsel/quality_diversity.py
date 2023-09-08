@@ -269,6 +269,13 @@ class CMAME(QDOptimization):
         inlier_mask = cost < lowest_cost * self.outlier_ratio
         solutions = solutions[inlier_mask]
         cost = cost[inlier_mask]
+        # rather than min, resort to elites
+        if len(solutions) == 0:
+            cost = -objectives
+            elite_cost = np.quantile(cost, 0.001)
+            inlier_mask = cost < elite_cost * self.outlier_ratio
+            solutions = solutions[inlier_mask]
+            cost = cost[inlier_mask]
         if len(solutions) > self.B:
             order = np.argpartition(cost, self.B)
             solutions = solutions[order[:self.B]]
