@@ -21,6 +21,10 @@ def continuous_representation_to_RT(x, device='cpu', dtype=torch.float):
     return RR, TT
 
 
+def H_to_continuous_representation(H):
+    return RT_to_continuous_representation(H[..., :3, :3], H[..., :3, 3])
+
+
 def continuous_representation_to_H(x, **kwargs):
     RR, TT = continuous_representation_to_RT(x, **kwargs)
     device = RR.device
