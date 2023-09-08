@@ -7,6 +7,7 @@ from chsel.types import SimilarityTransform, ICPSolution
 from pytorch_kinematics import random_rotations, matrix_to_rotation_6d, rotation_6d_to_matrix
 
 import logging
+import typing
 
 logger = logging.getLogger(__file__)
 
@@ -175,7 +176,7 @@ def volumetric_points_alignment(
         lr: float = 0.01,
         save_loss_plot=True,
         verbose=False
-) -> tuple[SimilarityTransform, torch.tensor]:
+) -> typing.Tuple[SimilarityTransform, torch.tensor]:
     """
     Finds a similarity transformation (rotation `R`, translation `T`
     and optionally scale `s`)  between two given sets of corresponding
