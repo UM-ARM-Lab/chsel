@@ -92,8 +92,8 @@ class FreeSpaceLookupCost(torch.autograd.Function):
                            device=model_frame_free_pos.device)
         violation = interior_threshold - sdf_value
         loss[violating] = violation
-        loss = loss.sum(dim=-1)
         ctx.save_for_backward(violating, violation, sdf_value, sdf_grad)
+        # returns Batch x Points; sum over dim=-1 to get per transform
         return loss
 
     @staticmethod
@@ -108,7 +108,7 @@ class FreeSpaceLookupCost(torch.autograd.Function):
             grads = torch.zeros(list(violating.shape) + [3], dtype=grad_outputs.dtype, device=grad_outputs.device)
             # free space point, so the surface needs to go in the opposite direction
             grads[violating] = violation.unsqueeze(-1) * sdf_grad
-            dl_dvoxels = grad_outputs[:, None, None] * -grads
+            dl_dvoxels = grad_outputs[:, :, None] * -grads
 
         # gradients for the other inputs not implemented
         return dl_dsdf, dl_dvoxels, dl_dthreshold
@@ -127,7 +127,6 @@ class OccupiedLookupCost(torch.autograd.Function):
                            device=model_frame_occ_pos.device)
         violation = -(interior_threshold + sdf_value)
         loss[violating] = violation
-        loss = loss.sum(dim=-1)
         ctx.save_for_backward(violating, violation, sdf_value, sdf_grad)
         return loss
 
@@ -143,7 +142,7 @@ class OccupiedLookupCost(torch.autograd.Function):
             grads = torch.zeros(list(violating.shape) + [3], dtype=grad_outputs.dtype, device=grad_outputs.device)
             # free space point, so the surface needs to go in the opposite direction
             grads[violating] = violation.unsqueeze(-1) * sdf_grad
-            dl_dvoxels = grad_outputs[:, None, None] * -grads
+            dl_dvoxels = grad_outputs[:, :, None] * -grads
 
         # gradients for the other inputs not implemented
         return dl_dsdf, dl_dvoxels, dl_dthreshold
@@ -158,7 +157,8 @@ class KnownSDFLookupCost(torch.autograd.Function):
         diff = sdf_value - expected_sdf_values
         # interior points will have sdf_value < 0
         ctx.save_for_backward(diff, sdf_grad)
-        return diff.abs().sum(dim=-1)
+        # return Batch x Points shape; caller should sum over points
+        return diff.abs()
 
     @staticmethod
     def backward(ctx: Any, grad_outputs: Any) -> Any:
@@ -169,7 +169,7 @@ class KnownSDFLookupCost(torch.autograd.Function):
         if ctx.needs_input_grad[1]:
             diff, sdf_grad = ctx.saved_tensors
             grads = sdf_grad * diff.unsqueeze(-1)
-            dl_dx = grad_outputs[:, None, None] * grads
+            dl_dx = grad_outputs[:, :, None] * grads
 
         # gradients for the other inputs not implemented
         return dl_dsdf, dl_dx, dl_dv
@@ -466,14 +466,17 @@ class VolumetricDirectSDFCost(VolumetricCost):
                                                                  self.free_voxels)
             loss += known_free_space_loss * self.scale_known_freespace
             self._last_call_info["unscaled_known_free_space_loss"] = known_free_space_loss
+            self._last_call_info["per_point_free_loss"] = None
         if self.scale_known_sdf != 0:
             world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
             known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
                                                                                       world_frame_known_sdf_voxels)
 
             known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
-            loss += known_sdf_loss * self.scale_known_sdf
-            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss
+            known_sdf_loss_per_tf = known_sdf_loss.sum(dim=-1)
+            loss += known_sdf_loss_per_tf * self.scale_known_sdf
+            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss_per_tf
+            self._last_call_info["per_point_sdf_loss"] = known_sdf_loss
 
         return loss * self.scale
 
@@ -526,6 +529,10 @@ class VolumetricDoubleDirectCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
+    @property
+    def last_call_info(self):
+        return self._last_call_info
+
     def __call__(self, R, T, s, other_info=None):
         self._last_call_info = {}
         # assign batch and reuse for later for efficiency
@@ -541,16 +548,20 @@ class VolumetricDoubleDirectCost(RegistrationCost):
             model_frame_free_voxels = self._transform_world_frame_points_to_model_frame(R, T, s,
                                                                                         world_frame_free_voxels)
             known_free_space_loss = FreeSpaceLookupCost.apply(self.sdf, model_frame_free_voxels, self.surface_threshold)
-            loss += known_free_space_loss * self.scale_known_freespace
-            self._last_call_info["unscaled_known_free_space_loss"] = known_free_space_loss
+            known_free_loss_per_tf = known_free_space_loss.sum(dim=-1)
+            loss += known_free_loss_per_tf * self.scale_known_freespace
+            self._last_call_info["unscaled_known_free_space_loss"] = known_free_loss_per_tf
+            self._last_call_info["per_point_free_loss"] = known_free_space_loss
         if self.scale_known_sdf != 0:
             world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
             known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
                                                                                       world_frame_known_sdf_voxels)
 
             known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
-            loss += known_sdf_loss * self.scale_known_sdf
-            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss
+            known_sdf_loss_per_tf = known_sdf_loss.sum(dim=-1)
+            loss += known_sdf_loss_per_tf * self.scale_known_sdf
+            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss_per_tf
+            self._last_call_info["per_point_sdf_loss"] = known_sdf_loss
 
         return loss * self.scale
 
