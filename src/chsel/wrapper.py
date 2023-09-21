@@ -19,10 +19,19 @@ import logging
 logger = logging.getLogger(__file__)
 
 
+def ensure_tensor(device, dtype, *args):
+    tensors = tuple(
+        x.to(device=device, dtype=dtype) if torch.is_tensor(x) else
+        torch.tensor(x, device=device, dtype=dtype)
+        for x in args)
+    return tensors if len(tensors) > 1 else tensors[0]
+
+
 class CHSEL:
     def __init__(self,
                  obj_sdf: pv.ObjectFrameSDF,
                  positions: torch.tensor, semantics: Sequence[types.Semantics],
+                 known_sdf_values: Optional[torch.tensor] = None,
                  cost=costs.VolumetricDirectSDFCost,
                  free_voxels: Optional[pv.Voxels] = None,
                  occupied_voxels: Optional[pv.Voxels] = None,
@@ -45,6 +54,8 @@ class CHSEL:
         :param obj_sdf: Object centered signed distance field (SDF)
         :param positions: World frame positions of the observed points
         :param semantics: Semantics of the observed points
+        :param known_sdf_values: Known SDF values of the observed points; if not specified, all known points will be
+        assumed to have SDF=0 (surface points)
         :param cost: Class that implements Eq. 6
         :param free_voxels: Explicit specification of free space voxels; if not specified they will be extracted
         from the given points that have the FREE semantics. If the observed points are derived from free voxels,
@@ -72,14 +83,15 @@ class CHSEL:
         """
         self.obj_sdf = obj_sdf
         self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
+        self.resolution = free_voxels_resolution
 
         self.dtype = positions.dtype
         self.device = positions.device
 
         self.positions = positions
         # to allow batch indexing
-        semantics = np.asarray(semantics, dtype=object)
-        self.semantics = semantics
+        # store their numeric values rather than enum for better operations
+        self.semantics = ensure_tensor(self.device, torch.long, semantics)
 
         self.debug = debug
         self.archive_range_sigma = archive_range_sigma
@@ -88,9 +100,10 @@ class CHSEL:
         self.qd_alg = qd_alg
         self.savedir = savedir
         # extract indices
-        self._free = torch.tensor([s == chsel.SemanticsClass.FREE for s in semantics])
-        self._occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in semantics])
-        self._known = ~self._free & ~self._occupied
+        idx = CHSEL.get_separate_semantic_indices(self.semantics)
+        self._free = idx['free']
+        self._occupied = idx['occupied']
+        self._known = idx['known']
 
         # intermediate results for use outside for debugging
         self.res_init = None
@@ -112,8 +125,9 @@ class CHSEL:
         # TODO extract the known occupied points (this has been unused in any experiments so far)
         # extract the known SDF points
         if known_sdf_voxels is None:
-            known_sdf_values = semantics[self._known].astype(float)
-            known_sdf_values = torch.tensor(known_sdf_values, dtype=self.dtype, device=self.device)
+            if known_sdf_values is None:
+                known_sdf_pts = positions[self._known]
+                known_sdf_values = torch.zeros(len(known_sdf_pts), dtype=self.dtype, device=self.device)
             known_sdf_voxels = pv.VoxelSet(positions[self._known], known_sdf_values)
 
         cost_options = {
@@ -125,6 +139,13 @@ class CHSEL:
         # construct the cost function
         self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf, dtype=self.dtype, device=self.device,
                                     **cost_options)
+
+    @staticmethod
+    def get_separate_semantic_indices(semantics):
+        free = semantics == chsel.SemanticsClass.FREE.value
+        occupied = semantics == chsel.SemanticsClass.OCCUPIED.value
+        known = ~free & ~occupied
+        return {'free': free, 'occupied': occupied, 'known': known}
 
     def evaluate_homogeneous(self, H_world_to_link: Union[torch.tensor, pk.Transform3d], use_scale=False):
         """
@@ -146,49 +167,69 @@ class CHSEL:
         """
         return self.volumetric_cost(R, T, s)
 
-    def update(self, positions, semantics):
+    def update(self, positions, semantics, known_sdf_values=None):
         """
         Update the observed point cloud and semantics
         """
         if len(positions) == 0:
             return
-        _free = torch.tensor([s == chsel.SemanticsClass.FREE for s in semantics])
-        _occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in semantics])
+        _free = semantics == chsel.SemanticsClass.FREE.value
+        _occupied = semantics == chsel.SemanticsClass.OCCUPIED.value
         _known = ~_free & ~_occupied
         self._free = torch.cat([self._free, _free])
         self._occupied = torch.cat([self._occupied, _occupied])
         self._known = torch.cat([self._known, _known])
         self.positions = torch.cat([self.positions, positions])
         self.volumetric_cost.free_voxels[positions[_free]] = 1
-        semantics = np.asarray(semantics, dtype=object)
-        self.semantics = np.concatenate([self.semantics, semantics])
+        self.semantics = torch.cat([self.semantics, semantics])
         if torch.any(_known):
             # special edge case for updating with only a single point, np interprets true as index 1
             if len(_known) == 1:
                 # if we directly use 0 as the index, the return is a scalar, so we need to use a slice
                 _known = slice(0, 1)
-            self.volumetric_cost.sdf_voxels[positions[_known]] = torch.tensor(semantics[_known].astype(float),
-                                                                              dtype=self.dtype,
-                                                                              device=self.device)
+            known_sdf_positions = positions[_known]
+            if known_sdf_values is None:
+                known_sdf_values = torch.zeros(len(known_sdf_positions), dtype=self.dtype, device=self.device)
+            self.volumetric_cost.sdf_voxels[known_sdf_positions] = known_sdf_values
 
-    def undo_update(self, num_pts):
-        """
-        Undo the latest update
-        :param num_pts: number of points to remove, starting from the last added ones
-        """
-        free = self._free[-num_pts:]
-        pos = self.positions[-num_pts:]
-        # occupied = self._occupied[-num_pts:]
-        self.volumetric_cost.free_voxels[pos[free]] = 0
+    def remove_duplicate_points(self, duplicate_distance=None, range_per_dim=None):
+        if duplicate_distance is None:
+            duplicate_distance = self.resolution
 
-        self._free = self._free[:-num_pts]
-        self._occupied = self._occupied[:-num_pts]
-        self._known = self._known[:-num_pts]
-        self.positions = self.positions[:-num_pts]
+        if range_per_dim is None:
+            range_per_dim = np.stack(
+                (self.positions.min(dim=0)[0].cpu().numpy(), self.positions.max(dim=0)[0].cpu().numpy())).T
 
-        known_sdf_values = self.semantics[self._known].astype(float)
-        known_sdf_values = torch.tensor(known_sdf_values, dtype=self.dtype, device=self.device)
-        self.volumetric_cost.sdf_voxels = pv.VoxelSet(self.positions[self._known], known_sdf_values)
+        all_pts = []
+        all_sem = []
+        for s in chsel.SemanticsClass:
+            idx = self.semantics == s.value
+            voxel = pv.VoxelGrid(duplicate_distance, range_per_dim, device=self.device)
+            pts = self.positions[idx]
+            voxel[pts] = 1
+            pts, sem = voxel.get_known_pos_and_values()
+            all_pts.append(pts)
+            all_sem.append(torch.ones(len(pts), dtype=torch.long, device=self.device) * s.value)
+        self.positions = torch.cat(all_pts)
+        self.semantics = torch.cat(all_sem).reshape(-1)
+
+        # # voxel down sample the observed points
+        # pcd = o3d.geometry.PointCloud()
+        # pcd.points = o3d.utility.Vector3dVector(self.positions.cpu().numpy())
+        # pcd, idx, idx_orig = pcd.voxel_down_sample_and_trace(duplicate_distance,
+        #                                                      self.positions.min(dim=0)[0].cpu().numpy(),
+        #                                                      self.positions.max(dim=0)[0].cpu().numpy())
+        # idx_select = np.array([idx[0] for idx in idx_orig])
+        # self.positions = torch.tensor(np.asarray(pcd.points), dtype=self.dtype, device=self.device)
+        # self.semantics = self.semantics[idx_select]
+
+        idx = CHSEL.get_separate_semantic_indices(self.semantics)
+        self._free = idx['free']
+        self._occupied = idx['occupied']
+        self._known = idx['known']
+        known_sdf_positions = self.positions[self._known]
+        known_sdf_values = torch.zeros(len(known_sdf_positions), dtype=self.dtype, device=self.device)
+        self.volumetric_cost.sdf_voxels = pv.VoxelSet(known_sdf_positions, known_sdf_values)
 
     def register(self, iterations=1, initial_tsf=None, low_cost_transform_set=None, **kwargs):
         """
