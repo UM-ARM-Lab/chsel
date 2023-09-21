@@ -14,14 +14,15 @@ class InitMethod(enum.Enum):
 
 
 def initialize_transform_estimates(B, freespace_ranges, init_method: InitMethod, contact_points,
-                                   device="cpu", dtype=torch.float):
+                                   device="cpu", dtype=torch.float, trans_noise=0.05):
     # translation is 0,0,0
     best_tsf_guess = random_upright_transforms(B, dtype, device)
     if init_method == InitMethod.ORIGIN:
         pass
     elif init_method == InitMethod.CONTACT_CENTROID:
         centroid = contact_points.mean(dim=0).to(device=device, dtype=dtype)
-        best_tsf_guess[:, :3, 3] = centroid
+        trans = np.random.uniform(np.ones(3) * -trans_noise, np.ones(3) * trans_noise, (B, 3))
+        best_tsf_guess[:, :3, 3] = centroid + torch.tensor(trans, device=device, dtype=dtype)
     elif init_method == InitMethod.RANDOM:
         trans = np.random.uniform(freespace_ranges[:, 0], freespace_ranges[:, 1], (B, 3))
         trans = torch.tensor(trans, device=device, dtype=dtype)
