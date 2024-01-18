@@ -252,7 +252,7 @@ class VolumetricCost(RegistrationCost):
         # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
         interior_threshold = -surface_threshold
         if query_voxel_grid is None:
-            query_voxel_grid = pv.VoxelGrid(self.surface_threshold,
+            query_voxel_grid = pv.VoxelGrid(max(self.surface_threshold, 0.01),
                                             self.sdf.surface_bounding_box(padding=0.1).cpu().numpy(),
                                             dtype=self.dtype, device=self.device)
 
