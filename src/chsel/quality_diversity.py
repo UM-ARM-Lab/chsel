@@ -261,21 +261,27 @@ class CMAME(QDOptimization):
     def process_final_results(self, s, losses):
         df = self.archive.as_pandas()
         objectives = df.objective_batch()
-        solutions = df.solution_batch()
+        all_solutions = df.solution_batch()
 
         cost = -objectives
         # filter out all solutions that are more than outlier_ratio times worse than the best
         lowest_cost = np.min(cost)
         inlier_mask = cost < lowest_cost * self.outlier_ratio
-        solutions = solutions[inlier_mask]
+        solutions = all_solutions[inlier_mask]
         cost = cost[inlier_mask]
         # rather than min, resort to elites
         if len(solutions) == 0:
             cost = -objectives
-            elite_cost = np.quantile(cost, 0.001)
+            elite_cost = np.quantile(cost, 0.01)
             inlier_mask = cost < elite_cost * self.outlier_ratio
-            solutions = solutions[inlier_mask]
+            solutions = all_solutions[inlier_mask]
             cost = cost[inlier_mask]
+        # if no elites, then resort to actual min
+        if len(solutions) == 0:
+            cost = -objectives
+            lowest_cost = np.min(cost)
+            solutions = all_solutions[cost == lowest_cost]
+            solutions = solutions.reshape(1, -1)
         if len(solutions) > self.B:
             order = np.argpartition(cost, self.B)
             solutions = solutions[order[:self.B]]
