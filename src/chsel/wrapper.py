@@ -36,10 +36,12 @@ class CHSEL:
                  free_voxels: Optional[pv.Voxels] = None,
                  occupied_voxels: Optional[pv.Voxels] = None,
                  known_sdf_voxels: Optional[pv.Voxels] = None,
-                 free_voxels_resolution=0.01,
+                 free_voxels_resolution=0.02,
+                 duplicate_resolution=0.02,
                  sgd_solution_outlier_rejection_ratio=5.0,
                  archive_range_sigma=3,
                  bins=40,
+                 do_qd=True,
                  qd_iterations=100,
                  qd_alg=quality_diversity.CMAMEGA,
                  qd_measure_dim=2,
@@ -68,6 +70,7 @@ class CHSEL:
         to be considered an outlier and rejected. This is used to prevent the archive range being polluted with outliers
         :param archive_range_sigma: b_sigma the number of standard deviations to consider for the archive
         :param bins: How many bins each dimension of the archive will have
+        :param do_qd: Whether to do quality diversity optimization
         :param qd_iterations: n_o number of quality diversity optimization iterations
         :param qd_alg: The quality diversity optimization algorithm to use
         :param qd_measure_dim: The number of translation dimensions to use for the QD measure in the order of XYZ -
@@ -83,7 +86,7 @@ class CHSEL:
         """
         self.obj_sdf = obj_sdf
         self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
-        self.resolution = free_voxels_resolution
+        self.resolution = duplicate_resolution
 
         self.dtype = positions.dtype
         self.device = positions.device
@@ -96,6 +99,7 @@ class CHSEL:
         self.debug = debug
         self.archive_range_sigma = archive_range_sigma
         self.bins = bins
+        self.do_qd = do_qd
         self.qd_iterations = qd_iterations
         self.qd_alg = qd_alg
         self.savedir = savedir
@@ -133,7 +137,7 @@ class CHSEL:
         cost_options = {
             "scale_known_freespace": 20,
             "debug": self.debug,
-            "surface_threshold": free_voxels_resolution
+            "surface_threshold": self.resolution
         }
         cost_options.update(cost_kwargs)
         # construct the cost function
@@ -192,6 +196,26 @@ class CHSEL:
                 known_sdf_values = torch.zeros(len(known_sdf_positions), dtype=self.dtype, device=self.device)
             self.volumetric_cost.sdf_voxels[known_sdf_positions] = known_sdf_values
 
+    def reset_free_points(self, still_free_points):
+        # don't touch the other semantics
+        untouched_semantics = self.semantics[~self._free]
+        positions = [self.positions[~self._free], still_free_points]
+        semantics = [untouched_semantics, torch.ones(len(still_free_points), dtype=torch.long,
+                                                     device=self.device) * chsel.SemanticsClass.FREE.value]
+
+        self.volumetric_cost.free_voxels = pv.ExpandingVoxelGrid(self.volumetric_cost.free_voxels.resolution,
+                                                                 [(0, 0) for _ in range(3)], dtype=self.dtype,
+                                                                 device=self.device)
+        self.volumetric_cost.free_voxels[still_free_points] = 1
+
+        self.positions = torch.cat(positions)
+        self.semantics = torch.cat(semantics).reshape(-1)
+
+        idx = CHSEL.get_separate_semantic_indices(self.semantics)
+        self._free = idx['free']
+        self._occupied = idx['occupied']
+        self._known = idx['known']
+
     def remove_duplicate_points(self, duplicate_distance=None, range_per_dim=None):
         if duplicate_distance is None:
             duplicate_distance = self.resolution
@@ -204,24 +228,12 @@ class CHSEL:
         all_sem = []
         for s in chsel.SemanticsClass:
             idx = self.semantics == s.value
-            voxel = pv.VoxelGrid(duplicate_distance, range_per_dim, device=self.device)
             pts = self.positions[idx]
-            voxel[pts] = 1
-            pts, sem = voxel.get_known_pos_and_values()
+            pts = pv.voxel_down_sample(pts, duplicate_distance, range_per_dim)
             all_pts.append(pts)
             all_sem.append(torch.ones(len(pts), dtype=torch.long, device=self.device) * s.value)
         self.positions = torch.cat(all_pts)
         self.semantics = torch.cat(all_sem).reshape(-1)
-
-        # # voxel down sample the observed points
-        # pcd = o3d.geometry.PointCloud()
-        # pcd.points = o3d.utility.Vector3dVector(self.positions.cpu().numpy())
-        # pcd, idx, idx_orig = pcd.voxel_down_sample_and_trace(duplicate_distance,
-        #                                                      self.positions.min(dim=0)[0].cpu().numpy(),
-        #                                                      self.positions.max(dim=0)[0].cpu().numpy())
-        # idx_select = np.array([idx[0] for idx in idx_orig])
-        # self.positions = torch.tensor(np.asarray(pcd.points), dtype=self.dtype, device=self.device)
-        # self.semantics = self.semantics[idx_select]
 
         idx = CHSEL.get_separate_semantic_indices(self.semantics)
         self._free = idx['free']
@@ -283,6 +295,9 @@ class CHSEL:
         # feed it the result of SGD optimization
         self.res_init = chsel.sgd.volumetric_registration_sgd(self.volumetric_cost, batch=batch,
                                                               init_transform=initial_tsf)
+
+        if not self.do_qd:
+            return self.res_init, None
 
         # create range based on SGD results (where are good fits)
         # filter outliers out based on RMSE
