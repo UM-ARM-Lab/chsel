@@ -178,6 +178,7 @@ class CMAME(QDOptimization):
                  # require an explicit range
                  ranges=None,
                  outlier_ratio=5.0,  # reject solutions that are this many times worse than the best
+                 outlier_absolute_tolerance=1e-6,  # handle rmse = 0 by allowing for at least this much tolerance
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
                  measure_dim=2,  # how many dimensions of translation to use, in the order of XYZ
                  # custom measure function, overrides measure_dim
@@ -195,6 +196,7 @@ class CMAME(QDOptimization):
         self.ranges = ranges
         self.qd_score_offset = qd_score_offset
         self.outlier_ratio = outlier_ratio
+        self.outlier_absolute_tolerance = outlier_absolute_tolerance
 
         self.archive = None
         self.i = 0
@@ -266,7 +268,7 @@ class CMAME(QDOptimization):
         cost = -objectives
         # filter out all solutions that are more than outlier_ratio times worse than the best
         lowest_cost = np.min(cost)
-        inlier_mask = cost < lowest_cost * self.outlier_ratio
+        inlier_mask = cost < lowest_cost * self.outlier_ratio + self.outlier_absolute_tolerance
         solutions = all_solutions[inlier_mask]
         cost = cost[inlier_mask]
         # rather than min, resort to elites
