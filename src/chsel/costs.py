@@ -218,8 +218,9 @@ class VolumetricCost(RegistrationCost):
     def __init__(self, free_voxels: pv.Voxels, sdf_voxels: pv.Voxels,
                  obj_sdf: pv.ObjectFrameSDF,
                  surface_threshold=0.01,
+                 occ_voxels: pv.Voxels = None,
                  # cost scales
-                 scale=1, scale_known_freespace=1., scale_known_sdf=1.,
+                 scale=1, scale_known_freespace=1., scale_known_sdf=1., scale_known_occ=0,
                  device='cpu', dtype=torch.float,
                  # for some cost approximations for acceleration
                  query_voxel_grid: typing.Optional[pv.VoxelGrid] = None,
@@ -239,39 +240,17 @@ class VolumetricCost(RegistrationCost):
 
         self.free_voxels = free_voxels
         self.sdf_voxels = sdf_voxels
+        self.occ_voxels = occ_voxels
 
         self.scale = scale
         self.scale_known_freespace = scale_known_freespace
         self.scale_known_sdf = scale_known_sdf
+        self.scale_known_occ = scale_known_occ
 
         # SDF gives us a volumetric representation of the target object
         self.sdf = obj_sdf
         self.surface_threshold = surface_threshold
 
-        # ---- for +, known free space points, we just have to care about interior points of the object
-        # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
-        interior_threshold = -surface_threshold
-        if query_voxel_grid is None:
-            bb = self.sdf.surface_bounding_box(padding=0.1).cpu().numpy()
-            query_voxel_grid = pv.VoxelGrid(self.surface_threshold or 0.01,
-                                            bb,
-                                            dtype=self.dtype, device=self.device)
-
-        self.model_interior_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < interior_threshold,
-                                                                       voxels=query_voxel_grid)
-        if self.model_interior_points_orig.shape[0] == 0:
-            raise RuntimeError("Something's wrong with the SDF since there are no interior points")
-
-        self.model_interior_weights, self.model_interior_normals_orig = self.sdf(self.model_interior_points_orig)
-        self.model_interior_weights *= -1
-
-        self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < surface_threshold,
-                                                             voxels=query_voxel_grid)
-        self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points)
-
-        if self.model_interior_points_orig.shape[0] == self.model_all_points.shape[0]:
-            raise RuntimeError("The voxelgrid to query points is too small and only interior points have been "
-                               "extracted. Resolve this by increasing the range the voxel grid is over")
         # batch
         self.B = None
 
@@ -288,17 +267,57 @@ class VolumetricCost(RegistrationCost):
         self.vis = vis
         self.obj_factory = obj_factory
 
+        # model points for inverting the lookup of freespace cost
+        self.model_interior_points_orig = None
+        self.model_interior_normals_orig = None
+        self.model_interior_weights = None
+        self.model_all_points = None
+        self.model_all_weights = None
+        self.model_all_normals = None
+        self.model_interior_points = None
+        self.model_interior_normals = None
+        self.init_model_points(query_voxel_grid=query_voxel_grid)
+
     @property
     def last_call_info(self):
         return self._last_call_info
+
+    def init_model_points(self, query_voxel_grid):
+        # ---- for +, known free space points, we just have to care about interior points of the object
+        # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
+        interior_threshold = -self.surface_threshold
+        if query_voxel_grid is None:
+            bb = self.sdf.surface_bounding_box(padding=0.1).cpu().numpy()
+            query_voxel_grid = pv.VoxelGrid(self.surface_threshold or 0.01,
+                                            bb,
+                                            dtype=self.dtype, device=self.device)
+
+        self.model_interior_points_orig = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < interior_threshold,
+                                                                       voxels=query_voxel_grid)
+        if self.model_interior_points_orig.shape[0] == 0:
+            raise RuntimeError("Something's wrong with the SDF since there are no interior points")
+
+        self.model_interior_weights, self.model_interior_normals_orig = self.sdf(self.model_interior_points_orig)
+        self.model_interior_weights *= -1
+
+        self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < self.surface_threshold,
+                                                             voxels=query_voxel_grid)
+        self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points)
+
+        if self.model_interior_points_orig.shape[0] == self.model_all_points.shape[0]:
+            raise RuntimeError("The voxelgrid to query points is too small and only interior points have been "
+                               "extracted. Resolve this by increasing the range the voxel grid is over")
+
+    def build_model_points(self, R, T, s):
+        self.B = R.shape[0]
+        self.model_interior_points = self.model_interior_points_orig.repeat(self.B, 1, 1)
+        self.model_interior_normals = self.model_interior_normals_orig.repeat(self.B, 1, 1)
 
     def __call__(self, R, T, s, other_info=None):
         self._last_call_info = {}
         # assign batch and reuse for later for efficiency
         if self.B is None or self.B != R.shape[0]:
-            self.B = R.shape[0]
-            self.model_interior_points = self.model_interior_points_orig.repeat(self.B, 1, 1)
-            self.model_interior_normals = self.model_interior_normals_orig.repeat(self.B, 1, 1)
+            self.build_model_points(R, T, s)
 
         # voxels are in world frame
         # need points transformed into world frame
@@ -310,19 +329,39 @@ class VolumetricCost(RegistrationCost):
         loss = torch.zeros(self.B, device=self._pts_interior.device, dtype=self._pts_interior.dtype)
 
         if self.scale_known_freespace != 0:
-            known_free_space_loss = FreeSpaceVoxelDiffCost.apply(self._pts_interior, self._grad,
-                                                                 self.model_interior_weights,
-                                                                 self.free_voxels)
-            loss += known_free_space_loss * self.scale_known_freespace
-            self._last_call_info['unscaled_known_free_space_loss'] = known_free_space_loss
+            loss += self._cost_freespace(R, T, s) * self.scale_known_freespace
+        if self.scale_known_occ != 0:
+            loss += self._cost_occ(R, T, s) * self.scale_known_occ
         if self.scale_known_sdf != 0:
-            known_sdf_voxel_centers, known_sdf_voxel_values = self.sdf_voxels.get_known_pos_and_values()
-            known_sdf_loss = KnownSDFVoxelDiffCost.apply(self._pts_all, self.model_all_weights,
-                                                         known_sdf_voxel_centers, known_sdf_voxel_values)
-            loss += known_sdf_loss * self.scale_known_sdf
-            self._last_call_info['unscaled_known_sdf_loss'] = known_sdf_loss
+            loss += self._cost_sdf(R, T, s) * self.scale_known_sdf
 
         return loss * self.scale
+
+    def _cost_freespace(self, R, T, s):
+        known_free_space_loss = FreeSpaceVoxelDiffCost.apply(self._pts_interior, self._grad,
+                                                             self.model_interior_weights,
+                                                             self.free_voxels)
+        self._last_call_info['unscaled_known_free_space_loss'] = known_free_space_loss
+        self._last_call_info["per_point_free_loss"] = None
+        return known_free_space_loss
+
+    def _cost_sdf(self, R, T, s):
+        known_sdf_voxel_centers, known_sdf_voxel_values = self.sdf_voxels.get_known_pos_and_values()
+        known_sdf_loss = KnownSDFVoxelDiffCost.apply(self._pts_all, self.model_all_weights,
+                                                     known_sdf_voxel_centers, known_sdf_voxel_values)
+        self._last_call_info['unscaled_known_sdf_loss'] = known_sdf_loss
+        return known_sdf_loss
+
+    def _cost_occ(self, R, T, s):
+        world_frame_occ_voxels, known_occ = self.occ_voxels.get_known_pos_and_values()
+        world_frame_occ_voxels = world_frame_occ_voxels[known_occ.view(-1) == 1]
+        model_frame_occ_voxels = self._transform_world_frame_points_to_model_frame(R, T, s,
+                                                                                   world_frame_occ_voxels)
+        known_occ_loss = OccupiedLookupCost.apply(self.sdf, model_frame_occ_voxels, self.surface_threshold)
+        known_occ_loss_per_tf = known_occ_loss.sum(dim=-1)
+        self._last_call_info["unscaled_known_occ_loss"] = known_occ_loss_per_tf
+        self._last_call_info["per_point_occ_loss"] = known_occ_loss
+        return known_occ_loss_per_tf
 
     def _transform_model_to_world_frame(self, R, T, s):
         Rt = R.transpose(-1, -2)
@@ -333,6 +372,10 @@ class VolumetricCost(RegistrationCost):
             self._pts_interior.retain_grad()
             self._pts_all.retain_grad()
         self._grad = apply_similarity_transform(self.model_interior_normals, Rt)
+
+    @staticmethod
+    def _transform_world_frame_points_to_model_frame(R, T, s, points):
+        return apply_similarity_transform(points, R, T, s)
 
     def visualize(self, R, T, s):
         if not self.debug:
@@ -449,125 +492,38 @@ class VolumetricCost(RegistrationCost):
 class VolumetricDirectSDFCost(VolumetricCost):
     """Use SDF queries for the known SDF points instead of using cached grads"""
 
-    def __call__(self, R, T, s, other_info=None):
-        self._last_call_info = {}
-        if self.B is None or self.B != R.shape[0]:
-            self.B = R.shape[0]
-            self.model_interior_points = self.model_interior_points_orig.repeat(self.B, 1, 1)
-            self.model_interior_normals = self.model_interior_normals_orig.repeat(self.B, 1, 1)
+    def _cost_sdf(self, R, T, s):
+        world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
+        known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
+                                                                                  world_frame_known_sdf_voxels)
 
-        # voxels are in world frame
-        self._transform_model_to_world_frame(R, T, s)
-
-        loss = torch.zeros(self.B, device=R.device, dtype=R.dtype)
-
-        if self.scale_known_freespace != 0:
-            known_free_space_loss = FreeSpaceVoxelDiffCost.apply(self._pts_interior, self._grad,
-                                                                 self.model_interior_weights,
-                                                                 self.free_voxels)
-            loss += known_free_space_loss * self.scale_known_freespace
-            self._last_call_info["unscaled_known_free_space_loss"] = known_free_space_loss
-            self._last_call_info["per_point_free_loss"] = None
-        if self.scale_known_sdf != 0:
-            world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
-            known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
-                                                                                      world_frame_known_sdf_voxels)
-
-            known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
-            known_sdf_loss_per_tf = known_sdf_loss.sum(dim=-1)
-            loss += known_sdf_loss_per_tf * self.scale_known_sdf
-            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss_per_tf
-            self._last_call_info["per_point_sdf_loss"] = known_sdf_loss
-
-        return loss * self.scale
-
-    def _transform_world_frame_points_to_model_frame(self, R, T, s, points):
-        return apply_similarity_transform(points, R, T, s)
+        known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
+        known_sdf_loss_per_tf = known_sdf_loss.sum(dim=-1)
+        self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss_per_tf
+        self._last_call_info["per_point_sdf_loss"] = known_sdf_loss
+        return known_sdf_loss_per_tf
 
 
-class VolumetricDoubleDirectCost(RegistrationCost):
+class VolumetricDoubleDirectCost(VolumetricDirectSDFCost):
     """Cost of transformed model pose intersecting with known freespace voxels
     (slower than the voxelized version above)"""
 
-    def __init__(self, free_voxels: pv.Voxels, sdf_voxels: pv.voxel.Voxels,
-                 obj_sdf: pv.ObjectFrameSDF,
-                 surface_threshold=0.01,
-                 # cost scales
-                 scale=1, scale_known_freespace=1., scale_known_sdf=1.,
-                 device='cpu', dtype=torch.float,
-                 # for debugging only
-                 vis=None, obj_factory=None,
-                 debug=False, debug_known_sgd=False, debug_freespace=False):
-        """
-        :param free_voxels: representation of freespace
-        :param sdf_voxels: voxels for which we know the exact SDF values for
-        :param obj_sdf: signed distance function of the target object in object frame
-        :param scale:
-        """
+    def init_model_points(self, query_voxel_grid):
+        pass
 
-        self.free_voxels = free_voxels
-        self.sdf_voxels = sdf_voxels
+    def build_model_points(self, R, T, s):
+        self.B = R.shape[0]
 
-        self.scale = scale
-        self.scale_known_freespace = scale_known_freespace
-        self.scale_known_sdf = scale_known_sdf
-
-        # SDF gives us a volumetric representation of the target object
-        self.sdf = obj_sdf
-        self.surface_threshold = surface_threshold
-
-        self.device = device
-        self.dtype = dtype
-
-        # batch
-        self.B = None
-
-        # intermediate products for visualization purposes
-        self.debug = debug
-        self.debug_known_sgd = debug_known_sgd
-        self.debug_freespace = debug_freespace
-
-        self.vis = vis
-        self.obj_factory = obj_factory
-
-    @property
-    def last_call_info(self):
-        return self._last_call_info
-
-    def __call__(self, R, T, s, other_info=None):
-        self._last_call_info = {}
-        # assign batch and reuse for later for efficiency
-        if self.B is None or self.B != R.shape[0]:
-            self.B = R.shape[0]
-
-        loss = torch.zeros(self.B, device=self.device, dtype=self.dtype)
-
-        # voxels are in world frame, translate them to model frame
-        if self.scale_known_freespace != 0:
-            world_frame_free_voxels, known_free = self.free_voxels.get_known_pos_and_values()
-            world_frame_free_voxels = world_frame_free_voxels[known_free.view(-1) == 1]
-            model_frame_free_voxels = self._transform_world_frame_points_to_model_frame(R, T, s,
-                                                                                        world_frame_free_voxels)
-            known_free_space_loss = FreeSpaceLookupCost.apply(self.sdf, model_frame_free_voxels, self.surface_threshold)
-            known_free_loss_per_tf = known_free_space_loss.sum(dim=-1)
-            loss += known_free_loss_per_tf * self.scale_known_freespace
-            self._last_call_info["unscaled_known_free_space_loss"] = known_free_loss_per_tf
-            self._last_call_info["per_point_free_loss"] = known_free_space_loss
-        if self.scale_known_sdf != 0:
-            world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
-            known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
-                                                                                      world_frame_known_sdf_voxels)
-
-            known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
-            known_sdf_loss_per_tf = known_sdf_loss.sum(dim=-1)
-            loss += known_sdf_loss_per_tf * self.scale_known_sdf
-            self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss_per_tf
-            self._last_call_info["per_point_sdf_loss"] = known_sdf_loss
-
-        return loss * self.scale
-
-    def _transform_world_frame_points_to_model_frame(self, R, T, s, points):
-        return apply_similarity_transform(points, R, T, s)
+    def _cost_freespace(self, R, T, s):
+        world_frame_free_voxels, known_free = self.free_voxels.get_known_pos_and_values()
+        world_frame_free_voxels = world_frame_free_voxels[known_free.view(-1) == 1]
+        model_frame_free_voxels = self._transform_world_frame_points_to_model_frame(R, T, s,
+                                                                                    world_frame_free_voxels)
+        known_free_space_loss = FreeSpaceLookupCost.apply(self.sdf, model_frame_free_voxels, self.surface_threshold)
+        known_free_loss_per_tf = known_free_space_loss.sum(dim=-1)
+        self._last_call_info["unscaled_known_free_space_loss"] = known_free_loss_per_tf
+        self._last_call_info["per_point_free_loss"] = known_free_space_loss
+        return known_free_loss_per_tf
 
 
 class DiscreteNondifferentiableCost(RegistrationCost):

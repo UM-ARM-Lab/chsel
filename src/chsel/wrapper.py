@@ -36,8 +36,9 @@ class CHSEL:
                  free_voxels: Optional[pv.Voxels] = None,
                  occupied_voxels: Optional[pv.Voxels] = None,
                  known_sdf_voxels: Optional[pv.Voxels] = None,
-                 free_voxels_resolution=0.02,
                  duplicate_resolution=0.02,
+                 free_voxels_resolution=None,
+                 occupied_voxels_resolution=None,
                  sgd_solution_outlier_rejection_ratio=5.0,
                  archive_range_sigma=3,
                  bins=40,
@@ -64,8 +65,12 @@ class CHSEL:
         it will save recreating them if these are specified directly.
         :param occupied_voxels: Similarly to the above
         :param known_sdf_voxels: Similarly to the above
-        :param free_voxels_resolution: Resolution in meters of the side-length of each voxel; this should scale with
-        the object's size; it is a good idea that at least 10 voxels span each dimension of the object
+        :param duplicate_resolution: Resolution in meters of the side-length of each voxel; this controls what points
+        are considered duplicates and removed when calling remove_duplicate_points()
+        :param free_voxels_resolution: Resolution as above; this should scale with
+        the object's size; it is a good idea that at least 10 voxels span each dimension of the object. If set to None
+        by default, the duplicate resolution will be used
+        :param occupied_voxels_resolution: Similarly to the above
         :param sgd_solution_outlier_rejection_ratio: The ratio of CHSEL cost function to the best one found, above which
         to be considered an outlier and rejected. This is used to prevent the archive range being polluted with outliers
         :param archive_range_sigma: b_sigma the number of standard deviations to consider for the archive
@@ -123,10 +128,16 @@ class CHSEL:
 
         # extract the known free voxels from the given free points
         if free_voxels is None:
-            free_voxels = pv.ExpandingVoxelGrid(free_voxels_resolution, [(0, 0) for _ in range(3)], dtype=self.dtype,
+            free_voxels = pv.ExpandingVoxelGrid(free_voxels_resolution or self.resolution, [(0, 0) for _ in range(3)],
+                                                dtype=self.dtype,
                                                 device=self.device)
             free_voxels[positions[self._free]] = 1
-        # TODO extract the known occupied points (this has been unused in any experiments so far)
+        # extract the known occupied voxels from the given occupied points
+        if occupied_voxels is None:
+            occupied_voxels = pv.ExpandingVoxelGrid(occupied_voxels_resolution or self.resolution,
+                                                    [(0, 0) for _ in range(3)],
+                                                    dtype=self.dtype, device=self.device)
+            occupied_voxels[positions[self._occupied]] = 1
         # extract the known SDF points
         if known_sdf_voxels is None:
             if known_sdf_values is None:
@@ -141,7 +152,9 @@ class CHSEL:
         }
         cost_options.update(cost_kwargs)
         # construct the cost function
-        self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf, dtype=self.dtype, device=self.device,
+        self.volumetric_cost = cost(free_voxels, known_sdf_voxels, self.obj_sdf,
+                                    occ_voxels=occupied_voxels,
+                                    dtype=self.dtype, device=self.device,
                                     **cost_options)
 
     @staticmethod
