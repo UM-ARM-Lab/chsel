@@ -5,6 +5,9 @@ import typing
 import pytorch_volumetric as pv
 from chsel.registration_util import apply_similarity_transform
 from typing import Any
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class RegistrationCost:
@@ -286,8 +289,8 @@ class VolumetricCost(RegistrationCost):
         # ---- for +, known free space points, we just have to care about interior points of the object
         # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
         interior_threshold = -self.surface_threshold
+        bb = self.sdf.surface_bounding_box(padding=0.1).cpu().numpy()
         if query_voxel_grid is None:
-            bb = self.sdf.surface_bounding_box(padding=0.1).cpu().numpy()
             query_voxel_grid = pv.VoxelGrid(self.surface_threshold or 0.01,
                                             bb,
                                             dtype=self.dtype, device=self.device)
@@ -304,6 +307,11 @@ class VolumetricCost(RegistrationCost):
                                                              voxels=query_voxel_grid)
         self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points)
 
+        if self.model_interior_points_orig.shape[0] < 25:
+            logger.warning(
+                f"Only {self.model_interior_points_orig.shape[0]} interior points for the model; consider decreasing "
+                f"the surface threshold {self.surface_threshold} such as by decreasing resolution; "
+                f"the object bounding box is {bb}")
         if self.model_interior_points_orig.shape[0] == self.model_all_points.shape[0]:
             raise RuntimeError("The voxelgrid to query points is too small and only interior points have been "
                                "extracted. Resolve this by increasing the range the voxel grid is over")
