@@ -125,7 +125,7 @@ class OccupiedLookupCost(torch.autograd.Function):
         # interior points will have sdf_value < 0
         loss = torch.zeros(model_frame_occ_pos.shape[:-1], dtype=model_frame_occ_pos.dtype,
                            device=model_frame_occ_pos.device)
-        violation = -(interior_threshold + sdf_value)
+        violation = -interior_threshold + sdf_value
         loss[violating] = violation
         ctx.save_for_backward(violating, violation, sdf_value, sdf_grad)
         return loss
@@ -142,7 +142,7 @@ class OccupiedLookupCost(torch.autograd.Function):
             grads = torch.zeros(list(violating.shape) + [3], dtype=grad_outputs.dtype, device=grad_outputs.device)
             # free space point, so the surface needs to go in the opposite direction
             grads[violating] = violation.unsqueeze(-1) * sdf_grad
-            dl_dvoxels = grad_outputs[:, :, None] * -grads
+            dl_dvoxels = grad_outputs[:, :, None] * grads
 
         # gradients for the other inputs not implemented
         return dl_dsdf, dl_dvoxels, dl_dthreshold
@@ -326,7 +326,7 @@ class VolumetricCost(RegistrationCost):
         self._transform_model_to_world_frame(R, T, s)
         # self.visualize(R, T, s)
 
-        loss = torch.zeros(self.B, device=self._pts_interior.device, dtype=self._pts_interior.dtype)
+        loss = torch.zeros(self.B, device=self.device, dtype=self.dtype)
 
         if self.scale_known_freespace != 0:
             loss += self._cost_freespace(R, T, s) * self.scale_known_freespace
@@ -513,6 +513,10 @@ class VolumetricDoubleDirectCost(VolumetricDirectSDFCost):
 
     def build_model_points(self, R, T, s):
         self.B = R.shape[0]
+
+    def _transform_model_to_world_frame(self, R, T, s):
+        # no model points needed
+        pass
 
     def _cost_freespace(self, R, T, s):
         world_frame_free_voxels, known_free = self.free_voxels.get_known_pos_and_values()
