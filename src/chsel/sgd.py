@@ -176,7 +176,7 @@ def volumetric_points_alignment(
         lr: float = 0.01,
         save_loss_plot=True,
         verbose=False
-) -> typing.Tuple[SimilarityTransform, torch.tensor]:
+):
     """
     Finds a similarity transformation (rotation `R`, translation `T`
     and optionally scale `s`)  between two given sets of corresponding
