@@ -184,15 +184,16 @@ class CHSEL:
         """
         return self.volumetric_cost(R, T, s)
 
-    def update(self, positions, semantics, known_sdf_values=None):
+    def update(self, positions: torch.tensor, semantics: torch.tensor, known_sdf_values=None):
         """
         Update the observed point cloud and semantics
         """
         if len(positions) == 0:
             return
-        _free = semantics == chsel.SemanticsClass.FREE.value
-        _occupied = semantics == chsel.SemanticsClass.OCCUPIED.value
-        _known = ~_free & ~_occupied
+        idx = CHSEL.get_separate_semantic_indices(semantics)
+        _free = idx['free']
+        _occupied = idx['occupied']
+        _known = idx['known']
         self._free = torch.cat([self._free, _free])
         self._occupied = torch.cat([self._occupied, _occupied])
         self._known = torch.cat([self._known, _known])
@@ -216,18 +217,10 @@ class CHSEL:
         semantics = [untouched_semantics, torch.ones(len(still_free_points), dtype=torch.long,
                                                      device=self.device) * chsel.SemanticsClass.FREE.value]
 
-        self.volumetric_cost.free_voxels = pv.ExpandingVoxelGrid(self.volumetric_cost.free_voxels.resolution,
-                                                                 [(0, 0) for _ in range(3)], dtype=self.dtype,
-                                                                 device=self.device)
-        self.volumetric_cost.free_voxels[still_free_points] = 1
-
         self.positions = torch.cat(positions)
         self.semantics = torch.cat(semantics).reshape(-1)
-
-        idx = CHSEL.get_separate_semantic_indices(self.semantics)
-        self._free = idx['free']
-        self._occupied = idx['occupied']
-        self._known = idx['known']
+        self._build_semantic_indices()
+        self._sync_free_points()
 
     def remove_duplicate_points(self, duplicate_distance=None, range_per_dim=None):
         if duplicate_distance is None:
@@ -247,11 +240,25 @@ class CHSEL:
             all_sem.append(torch.ones(len(pts), dtype=torch.long, device=self.device) * s.value)
         self.positions = torch.cat(all_pts)
         self.semantics = torch.cat(all_sem).reshape(-1)
+        self._build_semantic_indices()
 
+        self._sync_sdf_points()
+        self._sync_free_points()
+
+    def _build_semantic_indices(self):
         idx = CHSEL.get_separate_semantic_indices(self.semantics)
         self._free = idx['free']
         self._occupied = idx['occupied']
         self._known = idx['known']
+
+    def _sync_free_points(self):
+        """Ensure the wrapper's free points are in sync with the volumetric cost function's free points"""
+        self.volumetric_cost.free_voxels = pv.ExpandingVoxelGrid(self.volumetric_cost.free_voxels.resolution,
+                                                                 [(0, 0) for _ in range(3)], dtype=self.dtype,
+                                                                 device=self.device)
+        self.volumetric_cost.free_voxels[self.positions[self._free]] = 1
+
+    def _sync_sdf_points(self):
         known_sdf_positions = self.positions[self._known]
         known_sdf_values = torch.zeros(len(known_sdf_positions), dtype=self.dtype, device=self.device)
         self.volumetric_cost.sdf_voxels = pv.VoxelSet(known_sdf_positions, known_sdf_values)
