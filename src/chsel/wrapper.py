@@ -188,7 +188,7 @@ class CHSEL:
         """
         Update the observed point cloud and semantics
         """
-        if len(positions) == 0:
+        if positions is None or len(positions) == 0:
             return
         idx = CHSEL.get_separate_semantic_indices(semantics)
         _free = idx['free']
@@ -291,14 +291,16 @@ class CHSEL:
             low_cost_transform_set = all_solutions
         return res, all_solutions
 
-    def register_single(self, initial_tsf=None, low_cost_transform_set=None, batch=30, debug_func_after_sgd_init=None):
+    def register_single(self, initial_tsf=None, low_cost_transform_set=None, batch=30, debug_func_after_sgd_init=None,
+                        skip_qd=False):
         """
 
-        :param initial_tsf: T_0 initial transform to use for the optimization
+        :param initial_tsf: T_0 initial world to link transform to use for the optimization
         :param low_cost_transform_set: T_l low cost transform set such as from the previous iteration
         :param batch: number of transforms to estimate, only used if initial_tsf is not specified
         :param debug_func_after_sgd_init: debug function to call after the initial sgd optimization with the CHSEL
         object passed in
+        :param skip_qd: whether to skip the quality diversity optimization
         :return: the registration result (world to link transform matrix) and all the archive solutions
         """
         dim_pts = self.positions.shape[-1]
@@ -316,7 +318,7 @@ class CHSEL:
         self.res_init = chsel.sgd.volumetric_registration_sgd(self.volumetric_cost, batch=batch,
                                                               init_transform=initial_tsf)
 
-        if not self.do_qd:
+        if skip_qd or not self.do_qd:
             return self.res_init, None
 
         # create range based on SGD results (where are good fits)
