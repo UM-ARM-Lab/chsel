@@ -233,9 +233,14 @@ class CHSEL:
         all_pts = []
         all_sem = []
         for s in chsel.SemanticsClass:
+            # potentially different resolution per semantic class
+            if type(duplicate_distance) == dict:
+                resolution = duplicate_distance[s]
+            else:
+                resolution = duplicate_distance
             idx = self.semantics == s.value
             pts = self.positions[idx]
-            pts = pv.voxel_down_sample(pts, duplicate_distance, range_per_dim)
+            pts = pv.voxel_down_sample(pts, resolution, range_per_dim)
             all_pts.append(pts)
             all_sem.append(torch.ones(len(pts), dtype=torch.long, device=self.device) * s.value)
         self.positions = torch.cat(all_pts)
