@@ -1,12 +1,10 @@
 import os
 from typing import Optional
 
-import numpy as np
 import torch
 from matplotlib import pyplot as plt, cm as cm
 from ribs.visualize import grid_archive_heatmap
 from chsel.types import SimilarityTransform, ICPSolution
-from chsel.conversion import RT_to_continuous_representation
 import logging
 
 logger = logging.getLogger(__file__)
@@ -135,34 +133,3 @@ def solution_to_world_to_link_matrix(res: ICPSolution, invert_rot_matrix=False):
     return T
 
 
-def initialize_qd_archive(T, rmse, outlier_ratio=5.0, outlier_absolute_tolerance=0.1, range_sigma=3, min_std=1e-4,
-                          measure_fn=None):
-    # for dealing with rmse = 0; similar rtol and atol for isclose
-    if measure_fn is None:
-        # by default the measure is the translation
-        measure = T[:, :3, 3]
-    else:
-        # measure_fn act on flattened pose representation
-        x = RT_to_continuous_representation(T[:, :3, :3], T[:, :3, 3])
-        measure = measure_fn(x)
-        # ensure the measure is 2D
-        if len(measure.shape) == 1:
-            measure = measure.reshape(1, -1)
-
-    # filter out any solution that is above outlier_ratio of the best solution found
-    keep = rmse < (rmse.min() * outlier_ratio + outlier_absolute_tolerance)
-    m = measure[keep]
-    logger.info(f"keep {len(m)} solutions out of {len(measure)} for QD initialization with min rmse {rmse.min()}")
-
-    centroid = m.mean(dim=-2).cpu().numpy()
-    if len(m) == 1:
-        m_std = min_std * np.ones_like(centroid)
-    else:
-        m_std = m.std(dim=-2).cpu().numpy()
-        m_std = np.maximum(m_std, min_std)
-
-    # extract translation measure
-    centroid = centroid
-    m_std = m_std
-    ranges = np.array((centroid - m_std * range_sigma, centroid + m_std * range_sigma)).T
-    return ranges

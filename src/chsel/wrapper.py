@@ -2,6 +2,7 @@ from typing import Sequence, Optional, Union
 
 import math
 import chsel
+import chsel.quality_diversity
 import chsel.sgd
 import torch
 import numpy as np
@@ -36,6 +37,7 @@ class CHSEL:
                  free_voxels: Optional[pv.Voxels] = None,
                  occupied_voxels: Optional[pv.Voxels] = None,
                  known_sdf_voxels: Optional[pv.Voxels] = None,
+                 axis_of_rotation=None,
                  duplicate_resolution=0.02,
                  free_voxels_resolution=None,
                  occupied_voxels_resolution=None,
@@ -45,9 +47,7 @@ class CHSEL:
                  do_qd=True,
                  qd_iterations=100,
                  qd_alg=quality_diversity.CMAMEGA,
-                 qd_measure_dim=2,
-                 qd_measure_fn=None,
-                 qd_measure_grad=None,
+                 qd_measure: Optional[quality_diversity.MeasureFunction] = None,
                  savedir=registration_util.ROOT_DIR,
                  debug=False,
                  qd_alg_kwargs=None,
@@ -65,6 +65,7 @@ class CHSEL:
         it will save recreating them if these are specified directly.
         :param occupied_voxels: Similarly to the above
         :param known_sdf_voxels: Similarly to the above
+        :param axis_of_rotation: If given, optimize over SE(2) instead of SE(3) by fixing the rotation around the given axis
         :param duplicate_resolution: Resolution in meters of the side-length of each voxel; this controls what points
         are considered duplicates and removed when calling remove_duplicate_points()
         :param free_voxels_resolution: Resolution as above; this should scale with
@@ -78,20 +79,14 @@ class CHSEL:
         :param do_qd: Whether to do quality diversity optimization
         :param qd_iterations: n_o number of quality diversity optimization iterations
         :param qd_alg: The quality diversity optimization algorithm to use
-        :param qd_measure_dim: The number of translation dimensions to use for the QD measure in the order of XYZ -
-        this is what is ensured diversity across. For example, if you use qd_measure_dim=2, only diversity of estimated
-        transforms across X and Y translation terms will be ensured. This may be useful if you have an upright prior
-        that the object lies on a plane normal to Z. Empirically, we found no significant difference in performance
-        between 2 and 3 dimensions.
-        :param qd_measure_fn: The function to use for the QD measure. If not specified, the position is used.
-        :param qd_measure_grad: The gradient of the QD measure function. If not specified, the one associated with
-        position is used.
+        :param qd_measure: The function to use for the QD measure. If not specified, the position is used.
         :param savedir: Directory to save loss plots
         :param debug:
         """
         self.obj_sdf = obj_sdf
         self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
         self.resolution = duplicate_resolution
+        self.axis_of_rotation = axis_of_rotation
 
         self.dtype = positions.dtype
         self.device = positions.device
@@ -120,9 +115,7 @@ class CHSEL:
         self.res_history = []
         self.res_init_history = []
 
-        self._qd_alg_kwargs = {"measure_dim": qd_measure_dim,
-                               "measure_fn": qd_measure_fn,
-                               "measure_grad": qd_measure_grad}
+        self._qd_alg_kwargs = {"measure": qd_measure, }
         if qd_alg_kwargs is not None:
             self._qd_alg_kwargs.update(qd_alg_kwargs)
 
@@ -314,14 +307,16 @@ class CHSEL:
             batch = initial_tsf.shape[0]
 
         initial_tsf = init_random_transform_with_given_init(dim_pts, batch, self.dtype, self.device,
-                                                            initial_tsf=initial_tsf)
+                                                            initial_tsf=initial_tsf,
+                                                            axis_of_rotation=self.axis_of_rotation)
         initial_tsf = types.SimilarityTransform(initial_tsf[:, :3, :3],
                                                 initial_tsf[:, :3, 3],
                                                 torch.ones(batch, device=self.device, dtype=self.dtype))
 
         # feed it the result of SGD optimization
         self.res_init = chsel.sgd.volumetric_registration_sgd(self.volumetric_cost, batch=batch,
-                                                              init_transform=initial_tsf)
+                                                              init_transform=initial_tsf,
+                                                              axis_of_rotation=self.axis_of_rotation)
 
         if skip_qd or not self.do_qd:
             return self.res_init, None
@@ -329,10 +324,11 @@ class CHSEL:
         # create range based on SGD results (where are good fits)
         # filter outliers out based on RMSE
         T = registration_util.solution_to_world_to_link_matrix(self.res_init)
-        archive_range = registration_util.initialize_qd_archive(T, self.res_init.rmse,
-                                                                outlier_ratio=self.outlier_rejection_ratio,
-                                                                range_sigma=self.archive_range_sigma,
-                                                                measure_fn=self._qd_alg_kwargs.get('measure_fn', None))
+        archive_range = chsel.quality_diversity.initialize_qd_archive(T, self.res_init.rmse,
+                                                                      outlier_ratio=self.outlier_rejection_ratio,
+                                                                      range_sigma=self.archive_range_sigma,
+                                                                      measure_fn=self._qd_alg_kwargs.get('measure',
+                                                                                                         None))
         logger.info("QD position bins %s %s", self.bins, archive_range)
 
         if debug_func_after_sgd_init is not None:
@@ -346,7 +342,7 @@ class CHSEL:
                               ranges=archive_range, savedir=self.savedir, **self._qd_alg_kwargs)
 
         # \hat{T}_0
-        x = self.qd.get_numpy_x(self.res_init.RTs.R, self.res_init.RTs.T)
+        x = self.qd.measure.get_numpy_x(self.res_init.RTs.R, self.res_init.RTs.T)
         self.qd.add_solutions(x)
         # \hat{T}_l (such as from the previous iteration's get_all_elite_solutions())
         self.qd.add_solutions(low_cost_transform_set)
@@ -356,15 +352,19 @@ class CHSEL:
         return res, self.qd.get_all_elite_solutions()
 
 
-def init_random_transform_with_given_init(m, batch, dtype, device, initial_tsf=None):
+def init_random_transform_with_given_init(m, batch, dtype, device, initial_tsf=None, axis_of_rotation=None):
     # apply some random initial poses
-    if m > 2:
+    if m > 2 and axis_of_rotation is None:
         R = pk.random_rotations(batch, dtype=dtype, device=device)
     else:
         theta = torch.rand(batch, dtype=dtype, device=device) * math.pi * 2
-        Rtop = torch.cat([torch.cos(theta).view(-1, 1), -torch.sin(theta).view(-1, 1)], dim=1)
-        Rbot = torch.cat([torch.sin(theta).view(-1, 1), torch.cos(theta).view(-1, 1)], dim=1)
-        R = torch.cat((Rtop.unsqueeze(-1), Rbot.unsqueeze(-1)), dim=-1)
+        if axis_of_rotation is not None:
+            # rotate around the given axis
+            R = pk.axis_and_angle_to_matrix_33(axis_of_rotation, theta)
+        else:
+            Rtop = torch.cat([torch.cos(theta).view(-1, 1), -torch.sin(theta).view(-1, 1)], dim=1)
+            Rbot = torch.cat([torch.sin(theta).view(-1, 1), torch.cos(theta).view(-1, 1)], dim=1)
+            R = torch.cat((Rtop.unsqueeze(-1), Rbot.unsqueeze(-1)), dim=-1)
 
     init_pose = torch.eye(m + 1, dtype=dtype, device=device).repeat(batch, 1, 1)
     init_pose[:, :m, :m] = R[:, :m, :m]
