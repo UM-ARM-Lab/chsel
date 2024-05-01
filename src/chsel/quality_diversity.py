@@ -313,14 +313,11 @@ class CMAME(QDOptimization):
             self._add_solutions(solutions[i:i + SOLUTION_CHUNK])
 
     def get_all_elite_solutions(self):
-        df = self.archive.as_pandas()
-        solutions = df.solution_batch()
-        return solutions
+        return self.archive.data('solution')
 
     def process_final_results(self, s, losses):
-        df = self.archive.as_pandas()
-        objectives = df.objective_batch()
-        all_solutions = df.solution_batch()
+        objectives = self.archive.data('objective')
+        all_solutions = self.archive.data('solution')
 
         cost = -objectives
         # filter out all solutions that are more than outlier_ratio times worse than the best
