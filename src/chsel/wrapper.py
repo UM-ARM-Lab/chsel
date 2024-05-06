@@ -37,7 +37,9 @@ class CHSEL:
                  free_voxels: Optional[pv.Voxels] = None,
                  occupied_voxels: Optional[pv.Voxels] = None,
                  known_sdf_voxels: Optional[pv.Voxels] = None,
+                 # parameters for SE2 registration
                  axis_of_rotation=None,
+                 fixed_z_value=None,
                  duplicate_resolution=0.02,
                  free_voxels_resolution=None,
                  occupied_voxels_resolution=None,
@@ -86,7 +88,9 @@ class CHSEL:
         self.obj_sdf = obj_sdf
         self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
         self.resolution = duplicate_resolution
+
         self.axis_of_rotation = axis_of_rotation
+        self.fixed_z_value = fixed_z_value
 
         self.dtype = positions.dtype
         self.device = positions.device
@@ -316,7 +320,8 @@ class CHSEL:
         # feed it the result of SGD optimization
         self.res_init = chsel.sgd.volumetric_registration_sgd(self.volumetric_cost, batch=batch,
                                                               init_transform=initial_tsf,
-                                                              axis_of_rotation=self.axis_of_rotation)
+                                                              axis_of_rotation=self.axis_of_rotation,
+                                                              fixed_z_value=self.fixed_z_value, )
 
         if skip_qd or not self.do_qd:
             return self.res_init, None
