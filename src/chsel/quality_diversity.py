@@ -84,7 +84,14 @@ class SE2AngleMeasure(MeasureFunction):
 
     def __call__(self, x):
         # need to keep last dimension for compatibility with other measures
-        return x[..., 0:1]
+        # need to clip/wrap to avoid having really high measure; we will restrict it to [-pi, pi]
+        theta = x[..., 0:1]
+        # ensure [0, 2pi]
+        theta = np.mod(theta, 2 * np.pi)
+        # convert to [-pi, pi]
+        theta = np.where(theta > np.pi, theta - 2 * np.pi, theta)
+
+        return theta
 
     def grad(self, x):
         grad = np.zeros((1, x.shape[-1]))
