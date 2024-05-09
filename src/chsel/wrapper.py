@@ -181,6 +181,9 @@ class CHSEL:
         """
         return self.volumetric_cost(R, T, s)
 
+    def debug_last_cost_call(self):
+        return self.volumetric_cost.last_call_info
+
     def update(self, positions: torch.tensor, semantics: torch.tensor, known_sdf_values=None):
         """
         Update the observed point cloud and semantics
