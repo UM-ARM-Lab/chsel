@@ -5,6 +5,7 @@ import torch
 
 import pytorch_kinematics as pk
 from chsel.conversion import RT_to_continuous_representation, continuous_representation_to_RT
+from chsel.se2 import xyz_to_uv, uv_to_xyz, construct_plane_basis
 
 
 class MeasureFunction(abc.ABC):
@@ -62,11 +63,36 @@ class PositionMeasure(MeasureFunction):
         return grad
 
 
-class SE2AngleMeasure(MeasureFunction):
-    def __init__(self, axis_of_rotation, fixed_z_value=0):
+class SE2Measure(MeasureFunction):
+    def __init__(self, *args, axis_of_rotation, offset_along_axis=0, **kwargs):
         self.axis_of_rotation = axis_of_rotation
-        self.fixed_z_value = fixed_z_value
-        super().__init__(1, dtype=self.axis_of_rotation.dtype, device=self.axis_of_rotation.device)
+        self.offset_along_axis = offset_along_axis
+        self.origin = self.axis_of_rotation * self.offset_along_axis
+        self.axis_u, self.axis_v = construct_plane_basis(self.axis_of_rotation)
+
+        super().__init__(*args, dtype=self.axis_of_rotation.dtype, device=self.axis_of_rotation.device, **kwargs)
+
+    def get_numpy_x(self, R, T):
+        # projection of rotation down to axis of rotation
+        axis_angle = pk.matrix_to_axis_angle(R)
+        # dot product against the given axis of rotation to get the angle
+        theta = axis_angle @ self.axis_of_rotation
+        uv = xyz_to_uv(T, self.origin, self.axis_of_rotation, self.axis_u, self.axis_v)
+        x = torch.cat((theta.view(-1, 1), uv), dim=-1)
+        return x.cpu().numpy()
+
+    def get_torch_RT(self, x):
+        # convert back to R, T
+        if not torch.is_tensor(x):
+            x = torch.tensor(x, device=self.device, dtype=self.dtype)
+        R = pk.axis_and_angle_to_matrix_33(self.axis_of_rotation, x[..., 0])
+        T = uv_to_xyz(x[..., 1:], self.origin, self.axis_u, self.axis_v)
+        return R, T
+
+
+class SE2AngleMeasure(SE2Measure):
+    def __init__(self, *args, **kwargs):
+        super().__init__(1, *args, **kwargs)
 
     def __call__(self, x):
         # need to keep last dimension for compatibility with other measures
@@ -84,21 +110,3 @@ class SE2AngleMeasure(MeasureFunction):
         grad[:, 0] = 1
         grad = np.tile(grad, (x.shape[0], 1, 1))
         return grad
-
-    def get_numpy_x(self, R, T):
-        # projection of rotation down to axis of rotation
-        axis_angle = pk.matrix_to_axis_angle(R)
-        # dot product against the given axis of rotation to get the angle
-        theta = axis_angle @ self.axis_of_rotation
-        x = torch.cat((theta.view(-1, 1), T[..., :2]), dim=-1)
-        return x.cpu().numpy()
-
-    def get_torch_RT(self, x):
-        # convert back to R, T
-        if not torch.is_tensor(x):
-            x = torch.tensor(x, device=self.device, dtype=self.dtype)
-        R = pk.axis_and_angle_to_matrix_33(self.axis_of_rotation, x[..., 0])
-        T = torch.zeros(x.shape[0], 3, device=self.device, dtype=self.dtype)
-        T[:, :2] = x[..., 1:]
-        T[:, 2] = self.fixed_z_value
-        return R, T

@@ -22,7 +22,7 @@ class ICPSolution(NamedTuple):
 
 
 class SemanticsClass(enum.IntEnum):
-    KNOWN = 0
+    SURFACE = 0
     FREE = 1
     OCCUPIED = 2
 

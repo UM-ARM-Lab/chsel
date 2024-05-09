@@ -2,6 +2,7 @@ from typing import Sequence, Optional, Union
 
 import math
 import chsel
+import chsel.measure
 import chsel.quality_diversity
 import chsel.sgd
 import torch
@@ -11,6 +12,7 @@ from chsel import costs
 from chsel import types
 from chsel import quality_diversity
 from chsel import registration_util
+from chsel.se2 import project_transform
 
 import pytorch_volumetric as pv
 import pytorch_kinematics as pk
@@ -39,8 +41,9 @@ class CHSEL:
                  known_sdf_voxels: Optional[pv.Voxels] = None,
                  # parameters for SE2 registration
                  axis_of_rotation=None,
-                 fixed_z_value=None,
-                 duplicate_resolution=0.02,
+                 offset_along_axis=0,
+                 # for removing duplicate points
+                 resolution=0.02,
                  free_voxels_resolution=None,
                  occupied_voxels_resolution=None,
                  sgd_solution_outlier_rejection_ratio=5.0,
@@ -49,7 +52,7 @@ class CHSEL:
                  do_qd=True,
                  qd_iterations=100,
                  qd_alg=quality_diversity.CMAMEGA,
-                 qd_measure: Optional[quality_diversity.MeasureFunction] = None,
+                 qd_measure: Optional[chsel.measure.MeasureFunction] = None,
                  savedir=registration_util.ROOT_DIR,
                  debug=False,
                  qd_alg_kwargs=None,
@@ -68,7 +71,9 @@ class CHSEL:
         :param occupied_voxels: Similarly to the above
         :param known_sdf_voxels: Similarly to the above
         :param axis_of_rotation: If given, optimize over SE(2) instead of SE(3) by fixing the rotation around the given axis
-        :param duplicate_resolution: Resolution in meters of the side-length of each voxel; this controls what points
+        :param offset_along_axis: If axis_of_rotation is given, the SE(2) optimization is over a plane defined by the
+        axis_of_rotation and offset from origin along the axis_of_rotation by this value
+        :param resolution: Resolution in meters of the side-length of each voxel; this controls what points
         are considered duplicates and removed when calling remove_duplicate_points()
         :param free_voxels_resolution: Resolution as above; this should scale with
         the object's size; it is a good idea that at least 10 voxels span each dimension of the object. If set to None
@@ -87,10 +92,10 @@ class CHSEL:
         """
         self.obj_sdf = obj_sdf
         self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
-        self.resolution = duplicate_resolution
+        self.resolution = resolution
 
         self.axis_of_rotation = axis_of_rotation
-        self.fixed_z_value = fixed_z_value
+        self.offset_along_axis = offset_along_axis
 
         self.dtype = positions.dtype
         self.device = positions.device
@@ -277,6 +282,8 @@ class CHSEL:
         :param kwargs: arguments to pass to register_single
         :return: the registration result and all the archive solutions
         """
+        if initial_tsf is not None and isinstance(initial_tsf, pk.Transform3d):
+            initial_tsf = initial_tsf.get_matrix()
         res = None
         all_solutions = None
         self.res_history = []
@@ -296,6 +303,13 @@ class CHSEL:
             low_cost_transform_set = all_solutions
         return res, all_solutions
 
+    def enforce_transform_constraints(self, res):
+        if self.axis_of_rotation is not None:
+            R, T = project_transform(self.axis_of_rotation, self.offset_along_axis, res.RTs.R, res.RTs.T)
+            res = types.ICPSolution(res.converged, res.rmse, res.Xt, types.SimilarityTransform(R, T, res.RTs.s),
+                                    res.t_history)
+        return res
+
     def register_single(self, initial_tsf=None, low_cost_transform_set=None, batch=30, debug_func_after_sgd_init=None,
                         skip_qd=False):
         """
@@ -308,6 +322,9 @@ class CHSEL:
         :param skip_qd: whether to skip the quality diversity optimization
         :return: the registration result (world to link transform matrix) and all the archive solutions
         """
+        if initial_tsf is not None and isinstance(initial_tsf, pk.Transform3d):
+            initial_tsf = initial_tsf.get_matrix()
+
         dim_pts = self.positions.shape[-1]
         known_pts_world_frame = self.positions[self._known]
         if initial_tsf is not None:
@@ -324,19 +341,22 @@ class CHSEL:
         self.res_init = chsel.sgd.volumetric_registration_sgd(self.volumetric_cost, batch=batch,
                                                               init_transform=initial_tsf,
                                                               axis_of_rotation=self.axis_of_rotation,
-                                                              fixed_z_value=self.fixed_z_value, )
+                                                              offset_along_axis=self.offset_along_axis, )
 
         if skip_qd or not self.do_qd:
+            self.res_init = self.enforce_transform_constraints(self.res_init)
             return self.res_init, None
 
         # create range based on SGD results (where are good fits)
         # filter outliers out based on RMSE
         T = registration_util.solution_to_world_to_link_matrix(self.res_init)
-        archive_range = chsel.quality_diversity.initialize_qd_archive(T, self.res_init.rmse,
+        measure_fn = self._qd_alg_kwargs.get('measure', None)
+        if measure_fn is None:
+            measure_fn = chsel.measure.PositionMeasure(2, device=self.device, dtype=self.dtype)
+        self._qd_alg_kwargs['measure'] = measure_fn
+        archive_range = chsel.quality_diversity.initialize_qd_archive(T, self.res_init.rmse, measure_fn,
                                                                       outlier_ratio=self.outlier_rejection_ratio,
-                                                                      range_sigma=self.archive_range_sigma,
-                                                                      measure_fn=self._qd_alg_kwargs.get('measure',
-                                                                                                         None))
+                                                                      range_sigma=self.archive_range_sigma)
         logger.info("QD position bins %s %s", self.bins, archive_range)
 
         if debug_func_after_sgd_init is not None:
@@ -356,6 +376,7 @@ class CHSEL:
         self.qd.add_solutions(low_cost_transform_set)
 
         res = self.qd.run()
+        res = self.enforce_transform_constraints(res)
 
         return res, self.qd.get_all_elite_solutions()
 

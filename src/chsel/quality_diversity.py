@@ -322,12 +322,8 @@ class CMAMEGA(CMAME):
         return super(CMAMEGA, self).step()
 
 
-def initialize_qd_archive(T, rmse, outlier_ratio=5.0, outlier_absolute_tolerance=0.1, range_sigma=3, min_std=1e-4,
-                          measure_fn=None):
-    # for dealing with rmse = 0; similar rtol and atol for isclose
-    if measure_fn is None:
-        measure_fn = PositionMeasure(2, dtype=T.dtype, device=T.device)
-
+def initialize_qd_archive(T, rmse, measure_fn, outlier_ratio=5.0, outlier_absolute_tolerance=0.1, range_sigma=3,
+                          min_std=1e-4):
     x = measure_fn.get_numpy_x(T[:, :3, :3], T[:, :3, 3])
     measure = measure_fn(x)
 

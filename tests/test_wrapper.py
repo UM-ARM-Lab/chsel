@@ -139,8 +139,8 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
 
             draw_geometries_one_rotation(geo)
 
-    registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, free_voxels_resolution=0.01,
-                               duplicate_resolution=0.01,
+    registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100,
+                               resolution=0.01,
                                do_qd=True)
     if visualize:
         # visualize the model points (in model frame)
@@ -183,9 +183,9 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
             link_to_world = world_to_link.inverse()
             # print sorted rmse
             print(torch.sort(res.rmse))
-            fl = registration.volumetric_cost.last_call_info.get('unscaled_known_free_space_loss')
-            sl = registration.volumetric_cost.last_call_info.get('unscaled_known_sdf_loss')
-            ol = registration.volumetric_cost.last_call_info.get('unscaled_known_occ_loss')
+            fl = registration.debug_last_cost_call().get('unscaled_known_free_space_loss')
+            sl = registration.debug_last_cost_call().get('unscaled_known_sdf_loss')
+            ol = registration.debug_last_cost_call().get('unscaled_known_occ_loss')
             print(f"free space loss {fl} \nsdf loss {sl} \nocc loss {ol}")
             visualize_transforms(link_to_world)
 

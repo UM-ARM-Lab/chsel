@@ -3,6 +3,7 @@ import math
 import torch
 from chsel.costs import VolumetricCost
 from chsel.registration_util import plot_poke_losses, plot_sgd_losses
+from chsel.se2 import construct_plane_basis, xyz_to_uv, uv_to_xyz
 from chsel.types import SimilarityTransform, ICPSolution
 import pytorch_kinematics as pk
 from pytorch_kinematics import random_rotations, matrix_to_rotation_6d, rotation_6d_to_matrix
@@ -171,7 +172,7 @@ def volumetric_registration_sgd(
 def volumetric_points_alignment(
         volumetric_cost: VolumetricCost,
         axis_of_rotation=None,
-        fixed_z_value=0,
+        offset_along_axis=0,
         batch=30,
         estimate_scale: bool = False,
         R: torch.Tensor = None, T: torch.tensor = None, s: torch.tensor = None,
@@ -206,7 +207,7 @@ def volumetric_points_alignment(
     """
     if axis_of_rotation is not None:
         return volumetric_points_alignment_2d(volumetric_cost, axis_of_rotation,
-                                              fixed_z_value=fixed_z_value, batch=batch,
+                                              offset_along_axis=offset_along_axis, batch=batch,
                                               estimate_scale=estimate_scale, R=R, T=T, s=s,
                                               iterations=iterations, lr=lr, save_loss_plot=save_loss_plot,
                                               verbose=verbose)
@@ -266,7 +267,7 @@ def volumetric_points_alignment(
 def volumetric_points_alignment_2d(
         volumetric_cost: VolumetricCost,
         axis_of_rotation: torch.tensor,
-        fixed_z_value=0,
+        offset_along_axis=0,
         batch=30,
         estimate_scale: bool = False,
         R: torch.Tensor = None, T: torch.tensor = None, s: torch.tensor = None,
@@ -278,6 +279,10 @@ def volumetric_points_alignment_2d(
     """
     Similar to above but for 2D transforms with a fixed axis of rotation
     """
+    # ensure axis is normalized
+    axis_of_rotation = axis_of_rotation / torch.norm(axis_of_rotation)
+    origin = axis_of_rotation * offset_along_axis
+    axis_u, axis_v = construct_plane_basis(axis_of_rotation)
 
     device = volumetric_cost.device
     dtype = volumetric_cost.dtype
@@ -295,20 +300,21 @@ def volumetric_points_alignment_2d(
     theta = axis_angle @ axis_of_rotation
 
     # extract xy
-    T = T[..., :2]
+    # project them onto the SE(2) plane (offset along the axis)
+    uv = xyz_to_uv(T, origin, axis_of_rotation, axis_u, axis_v)
 
     # set them up as parameters for training
     theta.requires_grad = True
-    T.requires_grad = True
+    uv.requires_grad = True
     if estimate_scale:
         s.requires_grad = True
 
-    optimizer = torch.optim.Adam([theta, T, s], lr=lr)
-    T = torch.cat([T, torch.ones_like(T[..., :1]) * fixed_z_value], dim=-1)
+    optimizer = torch.optim.Adam([theta, uv, s], lr=lr)
 
     def get_usable_transform_representation():
         nonlocal T
         RR = pk.axis_and_angle_to_matrix_33(axis_of_rotation, theta)
+        T = uv_to_xyz(uv, origin, axis_u, axis_v)
         return RR, T
 
     losses = []
