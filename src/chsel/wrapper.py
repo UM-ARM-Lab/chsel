@@ -352,7 +352,11 @@ class CHSEL:
         T = registration_util.solution_to_world_to_link_matrix(self.res_init)
         measure_fn = self._qd_alg_kwargs.get('measure', None)
         if measure_fn is None:
-            measure_fn = chsel.measure.PositionMeasure(2, device=self.device, dtype=self.dtype)
+            if self.axis_of_rotation is None:
+                measure_fn = chsel.measure.PositionMeasure(2, device=self.device, dtype=self.dtype)
+            else:
+                measure_fn = chsel.measure.SE2AngleMeasure(axis_of_rotation=self.axis_of_rotation,
+                                                           offset_along_axis=self.offset_along_axis)
         self._qd_alg_kwargs['measure'] = measure_fn
         archive_range = chsel.quality_diversity.initialize_qd_archive(T, self.res_init.rmse, measure_fn,
                                                                       outlier_ratio=self.outlier_rejection_ratio,
