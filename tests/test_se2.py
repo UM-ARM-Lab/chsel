@@ -224,9 +224,9 @@ def test_se2(axis_of_rotation=(0, 0, 1)):
     axis_of_rotation = torch.tensor(axis_of_rotation, device=d, dtype=positions.dtype)
     axis_of_rotation /= torch.linalg.norm(axis_of_rotation)
 
-    R = pk.axis_and_angle_to_matrix_33(axis_of_rotation, torch.tensor(2.1, device=d))
+    R = pk.axis_and_angle_to_matrix_33(axis_of_rotation, torch.tensor(0.5, device=d))
     gt_link_to_world_tf = pk.Rotate(R, device=d)
-    gt_link_to_world_tf = gt_link_to_world_tf.translate(0.1, -0.1, 0.2)
+    gt_link_to_world_tf = gt_link_to_world_tf.translate(0., 0., 0.005)
     gt_world_to_link_tf = gt_link_to_world_tf.inverse()
 
     positions = gt_link_to_world_tf.transform_points(positions)
@@ -251,14 +251,15 @@ def test_se2(axis_of_rotation=(0, 0, 1)):
     registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100,
                                axis_of_rotation=axis_of_rotation, offset_along_axis=offset,
                                qd_measure=measure_fn,
-                               resolution=0.01, do_qd=True)
+                               do_qd=True)
 
     # alternatively the angular measure enforces rotational diversity (default)
     measure_fn = chsel.measure.SE2AngleMeasure(axis_of_rotation=axis_of_rotation, offset_along_axis=offset)
     registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100,
                                axis_of_rotation=axis_of_rotation, offset_along_axis=offset,
                                qd_measure=measure_fn,
-                               resolution=0.01, do_qd=True)
+                               do_qd=True)
+    print(registration.resolution)
 
     # by default, the 2D position measure is used
     # if you know the position quite well, but its rotation is ambiguous, it is advantageous to use rotation measures

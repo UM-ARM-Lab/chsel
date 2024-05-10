@@ -34,6 +34,7 @@ class CHSEL:
     def __init__(self,
                  obj_sdf: pv.ObjectFrameSDF,
                  positions: torch.tensor, semantics: Sequence[types.Semantics],
+                 resolution=None,
                  known_sdf_values: Optional[torch.tensor] = None,
                  cost=costs.VolumetricDirectSDFCost,
                  free_voxels: Optional[pv.Voxels] = None,
@@ -43,7 +44,6 @@ class CHSEL:
                  axis_of_rotation=None,
                  offset_along_axis=0,
                  # for removing duplicate points
-                 resolution=0.02,
                  free_voxels_resolution=None,
                  occupied_voxels_resolution=None,
                  sgd_solution_outlier_rejection_ratio=5.0,
@@ -62,6 +62,9 @@ class CHSEL:
         :param obj_sdf: Object centered signed distance field (SDF)
         :param positions: World frame positions of the observed points
         :param semantics: Semantics of the observed points
+        :param resolution: Resolution in meters of the side-length of each voxel; this controls what points
+        are considered duplicates and removed when calling remove_duplicate_points(); if None is given, it will be
+        chosen such that there are at least 20 voxels per dimension of the object
         :param known_sdf_values: Known SDF values of the observed points; if not specified, all known points will be
         assumed to have SDF=0 (surface points)
         :param cost: Class that implements Eq. 6
@@ -73,8 +76,6 @@ class CHSEL:
         :param axis_of_rotation: If given, optimize over SE(2) instead of SE(3) by fixing the rotation around the given axis
         :param offset_along_axis: If axis_of_rotation is given, the SE(2) optimization is over a plane defined by the
         axis_of_rotation and offset from origin along the axis_of_rotation by this value
-        :param resolution: Resolution in meters of the side-length of each voxel; this controls what points
-        are considered duplicates and removed when calling remove_duplicate_points()
         :param free_voxels_resolution: Resolution as above; this should scale with
         the object's size; it is a good idea that at least 10 voxels span each dimension of the object. If set to None
         by default, the duplicate resolution will be used
@@ -93,6 +94,10 @@ class CHSEL:
         self.obj_sdf = obj_sdf
         self.outlier_rejection_ratio = sgd_solution_outlier_rejection_ratio
         self.resolution = resolution
+        if self.resolution is None:
+            bb = self.obj_sdf.surface_bounding_box()
+            r = bb[:, 1] - bb[:, 0]
+            self.resolution = (min(r) / 20).cpu().item()
 
         self.axis_of_rotation = axis_of_rotation
         self.offset_along_axis = offset_along_axis

@@ -139,9 +139,7 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
 
             draw_geometries_one_rotation(geo)
 
-    registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100,
-                               resolution=0.01,
-                               do_qd=True)
+    registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, do_qd=True)
     if visualize:
         # visualize the model points (in model frame)
         interior_pts = registration.volumetric_cost.model_interior_points_orig
