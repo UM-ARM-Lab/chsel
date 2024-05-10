@@ -48,6 +48,7 @@ class CHSEL:
                  occupied_voxels_resolution=None,
                  sgd_solution_outlier_rejection_ratio=5.0,
                  archive_range_sigma=3,
+                 archive_min_size=2e-4,
                  bins=40,
                  do_qd=True,
                  qd_iterations=100,
@@ -83,6 +84,7 @@ class CHSEL:
         :param sgd_solution_outlier_rejection_ratio: The ratio of CHSEL cost function to the best one found, above which
         to be considered an outlier and rejected. This is used to prevent the archive range being polluted with outliers
         :param archive_range_sigma: b_sigma the number of standard deviations to consider for the archive
+        :param archive_min_size: b_min the minimum size of the archive (range of the bin)
         :param bins: How many bins each dimension of the archive will have
         :param do_qd: Whether to do quality diversity optimization
         :param qd_iterations: n_o number of quality diversity optimization iterations
@@ -112,6 +114,7 @@ class CHSEL:
 
         self.debug = debug
         self.archive_range_sigma = archive_range_sigma
+        self.archive_min_size = archive_min_size
         self.bins = bins
         self.do_qd = do_qd
         self.qd_iterations = qd_iterations
@@ -365,7 +368,8 @@ class CHSEL:
         self._qd_alg_kwargs['measure'] = measure_fn
         archive_range = chsel.quality_diversity.initialize_qd_archive(T, self.res_init.rmse, measure_fn,
                                                                       outlier_ratio=self.outlier_rejection_ratio,
-                                                                      range_sigma=self.archive_range_sigma)
+                                                                      range_sigma=self.archive_range_sigma,
+                                                                      min_std=self.archive_min_size * 0.5)
         logger.info("QD position bins %s %s", self.bins, archive_range)
 
         if debug_func_after_sgd_init is not None:

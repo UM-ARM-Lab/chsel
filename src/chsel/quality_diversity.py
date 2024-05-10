@@ -335,15 +335,8 @@ def initialize_qd_archive(T, rmse, measure_fn, outlier_ratio=5.0, outlier_absolu
     m = measure[keep.cpu()]
     logger.info(f"keep {len(m)} solutions out of {len(measure)} for QD initialization with min rmse {rmse.min()}")
 
-    centroid = m.mean(axis=-2)
-    if len(m) == 1:
-        m_std = min_std * np.ones_like(centroid)
-    else:
-        m_std = m.std(axis=-2)
-        m_std = np.maximum(m_std, min_std)
+    centroid, m_std = measure_fn.compute_moments(m)
+    m_std = np.maximum(m_std, min_std)
 
-    # extract translation measure
-    centroid = centroid
-    m_std = m_std
     ranges = np.array((centroid - m_std * range_sigma, centroid + m_std * range_sigma)).T
-    return ranges
+    return ranges.reshape(measure_fn.measure_dim, 2)

@@ -257,6 +257,7 @@ def test_se2(axis_of_rotation=(0, 0, 1)):
     measure_fn = chsel.measure.SE2AngleMeasure(axis_of_rotation=axis_of_rotation, offset_along_axis=offset)
     registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100,
                                axis_of_rotation=axis_of_rotation, offset_along_axis=offset,
+                               archive_range_sigma=1.5, archive_min_size=1e-6,
                                qd_measure=measure_fn,
                                do_qd=True)
     print(registration.resolution)
@@ -322,7 +323,42 @@ def test_se2(axis_of_rotation=(0, 0, 1)):
             visualize_transforms(link_to_world)
 
 
+def test_se2_measure():
+    seed(5)
+    # check that the angle wrapping works by evaluating the measure of a group of transforms
+    axis_of_rotation = torch.tensor([0, 0, 1], dtype=torch.float32)
+    offset = 0
+    measure = chsel.measure.SE2AngleMeasure(axis_of_rotation=axis_of_rotation, offset_along_axis=offset)
+
+    N = 100
+    x = torch.randn(N, 3)
+
+    # perturb the angle systematically
+    perturbation = torch.linspace(0, 2 * np.pi, N)
+    range_sigma = 3
+    min_std = 1e-4
+    diffs = []
+    for delta_angel in perturbation:
+        delta = torch.cat((delta_angel.repeat(N, 1), torch.zeros(N, 2)), dim=-1)
+        x_perturbed = x + delta
+        m = measure(x_perturbed)
+        m = m.reshape(-1, measure.measure_dim)
+
+        centroid, m_std = measure.compute_moments(m)
+        m_std = np.maximum(m_std, min_std)
+
+        ranges = np.array((centroid - m_std * range_sigma, centroid + m_std * range_sigma)).T
+        ranges = ranges.reshape(-1, 2)
+        diff = ranges[:, 1] - ranges[:, 0]
+        diffs.append(diff)
+        # logger.info(f"{ranges} {diff.sum()}")
+    diffs = np.array(diffs)
+    # check that the diffs are about the same
+    assert np.allclose(diffs, diffs[0], atol=1e-4)
+
+
 if __name__ == '__main__':
     test_projection_simple()
     test_projection()
+    test_se2_measure()
     test_se2()
