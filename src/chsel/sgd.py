@@ -1,9 +1,11 @@
 from typing import Optional
-
+import math
 import torch
 from chsel.costs import VolumetricCost
 from chsel.registration_util import plot_poke_losses, plot_sgd_losses
+from chsel.se2 import construct_plane_basis, xyz_to_uv, uv_to_xyz
 from chsel.types import SimilarityTransform, ICPSolution
+import pytorch_kinematics as pk
 from pytorch_kinematics import random_rotations, matrix_to_rotation_6d, rotation_6d_to_matrix
 
 import logging
@@ -169,6 +171,8 @@ def volumetric_registration_sgd(
 
 def volumetric_points_alignment(
         volumetric_cost: VolumetricCost,
+        axis_of_rotation=None,
+        offset_along_axis=0,
         batch=30,
         estimate_scale: bool = False,
         R: torch.Tensor = None, T: torch.tensor = None, s: torch.tensor = None,
@@ -201,6 +205,12 @@ def volumetric_points_alignment(
         - **T**: Batch of translations of shape `(minibatch, d)`.
         - **s**: batch of scaling factors of shape `(minibatch, )`.
     """
+    if axis_of_rotation is not None:
+        return volumetric_points_alignment_2d(volumetric_cost, axis_of_rotation,
+                                              offset_along_axis=offset_along_axis, batch=batch,
+                                              estimate_scale=estimate_scale, R=R, T=T, s=s,
+                                              iterations=iterations, lr=lr, save_loss_plot=save_loss_plot,
+                                              verbose=verbose)
 
     device = volumetric_cost.device
     dtype = volumetric_cost.dtype
@@ -228,6 +238,84 @@ def volumetric_points_alignment(
         # we get a more usable representation of R
         R = rotation_6d_to_matrix(q)
         return R, T
+
+    losses = []
+
+    for epoch in range(iterations):
+        R, T = get_usable_transform_representation()
+
+        total_loss = volumetric_cost(R, T, s)
+        total_loss.mean().backward()
+        losses.append(total_loss.detach())
+
+        # visualize gradients on the losses
+        volumetric_cost.visualize(R, T, s)
+
+        optimizer.step()
+        optimizer.zero_grad()
+
+    if save_loss_plot:
+        plot_sgd_losses(losses)
+
+    if verbose:
+        print(f"pose loss {total_loss.mean().item()}")
+    R, T = get_usable_transform_representation()
+    return SimilarityTransform(R.detach().clone(), T.detach().clone(),
+                               s.detach().clone()), total_loss.detach().clone()
+
+
+def volumetric_points_alignment_2d(
+        volumetric_cost: VolumetricCost,
+        axis_of_rotation: torch.tensor,
+        offset_along_axis=0,
+        batch=30,
+        estimate_scale: bool = False,
+        R: torch.Tensor = None, T: torch.tensor = None, s: torch.tensor = None,
+        iterations: int = 50,
+        lr: float = 0.01,
+        save_loss_plot=True,
+        verbose=False
+) -> typing.Tuple[SimilarityTransform, torch.tensor]:
+    """
+    Similar to above but for 2D transforms with a fixed axis of rotation
+    """
+    # ensure axis is normalized
+    axis_of_rotation = axis_of_rotation / torch.norm(axis_of_rotation)
+    origin = axis_of_rotation * offset_along_axis
+    axis_u, axis_v = construct_plane_basis(axis_of_rotation)
+
+    device = volumetric_cost.device
+    dtype = volumetric_cost.dtype
+    # works for only 3D transforms
+
+    if R is None:
+        theta = torch.rand(batch, dtype=dtype, device=device) * math.pi * 2
+        R = pk.axis_and_angle_to_matrix_33(axis_of_rotation, theta)
+        T = torch.randn((batch, 3), dtype=dtype, device=device)
+        s = torch.ones(batch, dtype=dtype, device=device)
+
+    # projection of rotation down to axis of rotation
+    axis_angle = pk.matrix_to_axis_angle(R)
+    # dot product against the given axis of rotation to get the angle
+    theta = axis_angle @ axis_of_rotation
+
+    # extract xy
+    # project them onto the SE(2) plane (offset along the axis)
+    uv = xyz_to_uv(T, origin, axis_of_rotation, axis_u, axis_v)
+
+    # set them up as parameters for training
+    theta.requires_grad = True
+    uv.requires_grad = True
+    if estimate_scale:
+        s.requires_grad = True
+
+    optimizer = torch.optim.Adam([theta, uv, s], lr=lr)
+
+    def get_usable_transform_representation():
+        nonlocal T
+        RR = pk.axis_and_angle_to_matrix_33(axis_of_rotation, theta)
+        T = uv_to_xyz(uv, origin, axis_u, axis_v)
+        return RR, T
 
     losses = []
 

@@ -313,3 +313,31 @@ world_to_link = chsel.solution_to_world_to_link_matrix(res)
 res, all_solutions = registration.register(iterations=5, batch=B, initial_tsf=world_to_link,
                                            low_cost_transform_set=all_solutions)
 ```
+
+### SE(2) Constraint
+If you know the object lies on a table top for example, you can constrain the optimization to be over
+SE(2) instead of SE(3). You do this by specifying the plane via the axis of rotation (normal) and a
+scalar offset:
+```python
+# table top assumed to face positive z
+normal = torch.tensor([0, 0, 1])
+offset = torch.tensor([0, 0, 0])
+registration = chsel.CHSEL(sdf, positions, semantics, axis_of_rotation=normal, offset_along_normal=offset)
+```
+
+### Measures
+QD optimization works by binning over the measure space. This is how diversity is enforced.
+You can specify the measure space by providing a `chsel.measure.MeasureFunction` object.
+Note that this also defines what space the QD optimization is performed in. (such as a 9 dimensional continuous 
+representation of SE(3) transforms, or a 3 dimensional space for SE(2) transforms).
+
+For example, if you are on a tabletop and know the object's position quite well and want diversity in yaw:
+
+```python
+import chsel
+
+normal = torch.tensor([0, 0, 1])
+offset = torch.tensor([0, 0, 0])
+measure = chsel.SE2AngleMeasure(axis_of_rotation=normal, offset_along_normal=offset)
+registration = chsel.CHSEL(sdf, positions, semantics, axis_of_rotation=normal, offset_along_normal=offset)
+```

@@ -21,9 +21,10 @@ class ICPSolution(NamedTuple):
     t_history: List[SimilarityTransform]
 
 
-class SemanticsClass(enum.Enum):
-    FREE = 0
-    OCCUPIED = 1
+class SemanticsClass(enum.IntEnum):
+    SURFACE = 0
+    FREE = 1
+    OCCUPIED = 2
 
 
 # for known SDF value, it is the actual float value

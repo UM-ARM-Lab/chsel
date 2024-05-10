@@ -7,21 +7,25 @@ import numpy as np
 
 import torch
 from arm_pytorch_utilities.tensor_utils import ensure_tensor
-from chsel.conversion import RT_to_continuous_representation, continuous_representation_to_RT
 
 from ribs.archives import GridArchive
 from ribs.emitters import EvolutionStrategyEmitter, GradientArborescenceEmitter
 from ribs.schedulers import Scheduler
 from chsel.costs import RegistrationCost
 from chsel.types import SimilarityTransform, ICPSolution
+from chsel.measure import PositionMeasure
 from chsel import registration_util
 
 logger = logging.getLogger(__name__)
 
 
+# try measure function on the rotation dimensions
+
+
 class QDOptimization:
     def __init__(self, registration_cost: RegistrationCost,
                  model_points_world_frame: torch.tensor,
+                 measure=None,
                  init_transform: Optional[SimilarityTransform] = None,
                  sigma=0.1,
                  num_emitters=5,
@@ -53,8 +57,12 @@ class QDOptimization:
         self.device = self.Xt.device
         self.dtype = self.Xt.dtype
 
+        self.measure = measure
+        if self.measure is None:
+            self.measure = PositionMeasure(2, dtype=self.dtype, device=self.device)
+
         Xt, R, T, s = registration_util.apply_init_transform(self.Xt, self.init_transform)
-        x = self.get_numpy_x(R, T)
+        x = self.measure.get_numpy_x(R, T)
         self.num_emitters = num_emitters
         self.scheduler = self.create_scheduler(x, **kwargs)
 
@@ -98,13 +106,6 @@ class QDOptimization:
     def get_all_elite_solutions(self):
         return None
 
-    @staticmethod
-    def get_numpy_x(R, T):
-        return RT_to_continuous_representation(R, T).cpu().numpy()
-
-    def get_torch_RT(self, x):
-        return continuous_representation_to_RT(x, self.device, self.dtype)
-
 
 class CMAES(QDOptimization):
     def create_scheduler(self, x, *args, **kwargs):
@@ -120,7 +121,7 @@ class CMAES(QDOptimization):
     def step(self):
         solutions = self.scheduler.ask()
         # convert back to R, T, s
-        R, T = self.get_torch_RT(np.stack(solutions))
+        R, T = self.measure.get_torch_RT(np.stack(solutions))
         cost = self.registration_cost(R, T, None)
         self.scheduler.tell(solutions, cost.cpu().numpy())
         return cost
@@ -134,7 +135,7 @@ class CMAES(QDOptimization):
     def process_final_results(self, s, losses):
         # convert ES back to R, T
         solutions = self.scheduler.ask()
-        R, T = self.get_torch_RT(np.stack(solutions))
+        R, T = self.measure.get_torch_RT(np.stack(solutions))
         rmse = self.registration_cost(R, T, s)
 
         if self.save_loss_plot:
@@ -143,69 +144,37 @@ class CMAES(QDOptimization):
         return R, T, rmse
 
 
-# try measure function on the rotation dimensions
-def rot_measure(measure_dim, offset=0):
-    # ensure the measure is only over the rotation dimensions
-    assert measure_dim + offset <= 6
-
-    def fn(x):
-        return x[..., offset:measure_dim]
-
-    def grad(x):
-        grad = np.zeros((measure_dim, x.shape[-1]))
-        grad[:, offset:measure_dim] = np.eye(measure_dim)
-        grad = np.tile(grad, (x.shape[0], 1, 1))
-        return grad
-
-    return fn, grad
-
-
-def position_measure(measure_dim):
-    def fn(x):
-        return x[..., 6:6 + measure_dim]
-
-    def grad(x):
-        grad = np.zeros((measure_dim, x.shape[-1]))
-        grad[:, 6:6 + measure_dim] = np.eye(measure_dim)
-        grad = np.tile(grad, (x.shape[0], 1, 1))
-        return grad
-
-    return fn, grad
-
-
 class CMAME(QDOptimization):
     def __init__(self, *args, bins=20, iterations=100,
                  # require an explicit range
                  ranges=None,
                  outlier_ratio=5.0,  # reject solutions that are this many times worse than the best
+                 outlier_absolute_tolerance=1e-6,  # handle rmse = 0 by allowing for at least this much tolerance
                  qd_score_offset=-100,  # useful for tracking the archive QD score as monotonically increasing
-                 measure_dim=2,  # how many dimensions of translation to use, in the order of XYZ
-                 # custom measure function, overrides measure_dim
-                 measure_fn=None, measure_grad=None,
+                 measure=None,
                  **kwargs):
-        self.measure_dim = measure_dim
         if "sigma" not in kwargs:
             kwargs["sigma"] = 1.0
+        self.measure = measure
+        if self.measure is None:
+            self.measure = PositionMeasure(2)
+
         if isinstance(bins, (float, int)):
-            self.bins = [bins for _ in range(self.measure_dim)]
+            self.bins = [bins for _ in range(self.measure.measure_dim)]
         else:
-            assert len(bins) == self.measure_dim
+            assert len(bins) == self.measure.measure_dim
             self.bins = bins
         self.iterations = iterations
         self.ranges = ranges
         self.qd_score_offset = qd_score_offset
         self.outlier_ratio = outlier_ratio
+        self.outlier_absolute_tolerance = outlier_absolute_tolerance
 
         self.archive = None
         self.i = 0
         self.qd_scores = []
 
-        self._measure = measure_fn
-        self._measure_grad = measure_grad
-        if self._measure is None:
-            self._measure, self._measure_grad = position_measure(self.measure_dim)
-
-        super(CMAME, self).__init__(*args, **kwargs)
+        super(CMAME, self).__init__(*args, measure=self.measure, **kwargs)
 
     def _create_ranges(self):
         if self.ranges is None:
@@ -213,7 +182,8 @@ class CMAME(QDOptimization):
 
     def create_scheduler(self, x, *args, **kwargs):
         self._create_ranges()
-        self.archive = GridArchive(solution_dim=x.shape[1], dims=self.bins, ranges=self.ranges[:self.measure_dim],
+        self.archive = GridArchive(solution_dim=x.shape[1], dims=self.bins,
+                                   ranges=self.ranges[:self.measure.measure_dim],
                                    seed=np.random.randint(0, 10000), qd_score_offset=self.qd_score_offset)
         emitters = [
             EvolutionStrategyEmitter(self.archive, x0=x[i], sigma0=self.sigma, batch_size=self.B,
@@ -231,9 +201,9 @@ class CMAME(QDOptimization):
         solutions = self.scheduler.ask()
         # evaluate the models and record the objective and behavior
         # note that objective is -cost
-        R, T = self.get_torch_RT(np.stack(solutions))
+        R, T = self.measure.get_torch_RT(np.stack(solutions))
         cost = self.registration_cost(R, T, None)
-        bcs = self._measure(solutions)
+        bcs = self.measure(solutions)
         self.scheduler.tell(-cost.cpu().numpy(), bcs)
         qd = self.archive.stats.norm_qd_score
         self.qd_scores.append(qd)
@@ -241,9 +211,9 @@ class CMAME(QDOptimization):
         return cost
 
     def _add_solutions(self, solutions):
-        R, T = self.get_torch_RT(np.stack(solutions))
+        R, T = self.measure.get_torch_RT(np.stack(solutions))
         rmse = self.registration_cost(R, T, None)
-        self.archive.add(solutions, -rmse.cpu().numpy(), self._measure(solutions))
+        self.archive.add(solutions, -rmse.cpu().numpy(), self.measure(solutions))
 
     def add_solutions(self, solutions):
         if solutions is None:
@@ -254,28 +224,31 @@ class CMAME(QDOptimization):
             self._add_solutions(solutions[i:i + SOLUTION_CHUNK])
 
     def get_all_elite_solutions(self):
-        df = self.archive.as_pandas()
-        solutions = df.solution_batch()
-        return solutions
+        return self.archive.data('solution')
 
     def process_final_results(self, s, losses):
-        df = self.archive.as_pandas()
-        objectives = df.objective_batch()
-        solutions = df.solution_batch()
+        objectives = self.archive.data('objective')
+        all_solutions = self.archive.data('solution')
 
         cost = -objectives
         # filter out all solutions that are more than outlier_ratio times worse than the best
         lowest_cost = np.min(cost)
-        inlier_mask = cost < lowest_cost * self.outlier_ratio
-        solutions = solutions[inlier_mask]
+        inlier_mask = cost < lowest_cost * self.outlier_ratio + self.outlier_absolute_tolerance
+        solutions = all_solutions[inlier_mask]
         cost = cost[inlier_mask]
         # rather than min, resort to elites
         if len(solutions) == 0:
             cost = -objectives
-            elite_cost = np.quantile(cost, 0.001)
+            elite_cost = np.quantile(cost, 0.01)
             inlier_mask = cost < elite_cost * self.outlier_ratio
-            solutions = solutions[inlier_mask]
+            solutions = all_solutions[inlier_mask]
             cost = cost[inlier_mask]
+        # if no elites, then resort to actual min
+        if len(solutions) == 0:
+            cost = -objectives
+            lowest_cost = np.min(cost)
+            solutions = all_solutions[cost == lowest_cost]
+            solutions = solutions.reshape(1, -1)
         if len(solutions) > self.B:
             order = np.argpartition(cost, self.B)
             solutions = solutions[order[:self.B]]
@@ -285,7 +258,7 @@ class CMAME(QDOptimization):
             resampled_indices = np.random.choice(np.arange(len(solutions)), self.B - len(solutions))
             solutions = np.concatenate([solutions, solutions[resampled_indices]], axis=0)
         # convert back to R, T
-        R, T = self.get_torch_RT(solutions)
+        R, T = self.measure.get_torch_RT(solutions)
         rmse = self.registration_cost(R, T, s)
 
         if self.save_loss_plot:
@@ -306,7 +279,7 @@ class CMAMEGA(CMAME):
     def create_scheduler(self, x, *args, **kwargs):
         self._create_ranges()
         self.archive = GridArchive(solution_dim=x.shape[1], dims=self.bins, seed=np.random.randint(0, 10000),
-                                   ranges=self.ranges[:self.measure_dim], qd_score_offset=self.qd_score_offset)
+                                   ranges=self.ranges[:self.measure.measure_dim], qd_score_offset=self.qd_score_offset)
         emitters = []
         # emitters += [
         #     EvolutionStrategyEmitter(self.archive, x0=x[i], sigma0=self.sigma, batch_size=self.B) for i in
@@ -325,12 +298,12 @@ class CMAMEGA(CMAME):
         return scheduler
 
     def _f(self, x):
-        R, T = self.get_torch_RT(x)
+        R, T = self.measure.get_torch_RT(x)
         return self.registration_cost(R, T, None)
 
     def step(self):
         solutions = self.scheduler.ask_dqd()
-        bcs = self._measure(solutions)
+        bcs = self.measure(solutions)
         # evaluate the models and record the objective and behavior
         # note that objective is -cost
         # get objective gradient and also the behavior gradient
@@ -341,9 +314,29 @@ class CMAMEGA(CMAME):
         objective_grad = -(x.grad.cpu().numpy())
         objective = -cost.detach().cpu().numpy()
         objective_grad = objective_grad.reshape(x.shape[0], 1, -1)
-        measure_grad = self._measure_grad(x)
+        measure_grad = self.measure.grad(x)
 
         jacobian = np.concatenate((objective_grad, measure_grad), axis=1)
         self.scheduler.tell_dqd(objective, bcs, jacobian)
 
         return super(CMAMEGA, self).step()
+
+
+def initialize_qd_archive(T, rmse, measure_fn, outlier_ratio=5.0, outlier_absolute_tolerance=0.1, range_sigma=3,
+                          min_std=1e-4):
+    x = measure_fn.get_numpy_x(T[:, :3, :3], T[:, :3, 3])
+    measure = measure_fn(x)
+
+    # ensure the measure is 2D
+    measure = measure.reshape(-1, measure_fn.measure_dim)
+
+    # filter out any solution that is above outlier_ratio of the best solution found
+    keep = rmse < (rmse.min() * outlier_ratio + outlier_absolute_tolerance)
+    m = measure[keep.cpu()]
+    logger.info(f"keep {len(m)} solutions out of {len(measure)} for QD initialization with min rmse {rmse.min()}")
+
+    centroid, m_std = measure_fn.compute_moments(m)
+    m_std = np.maximum(m_std, min_std)
+
+    ranges = np.array((centroid - m_std * range_sigma, centroid + m_std * range_sigma)).T
+    return ranges.reshape(measure_fn.measure_dim, 2)

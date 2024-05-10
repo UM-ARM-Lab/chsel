@@ -105,9 +105,9 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
         pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu().numpy())
         pc_sdf.paint_uniform_color([0, 0.706, 1])
 
-        print(f"visualize object mesh, free space points (orange), and known SDF points (blue) (press Q or the close window button to move on)")
+        print(
+            f"visualize object mesh, free space points (orange), and known SDF points (blue) (press Q or the close window button to move on)")
         draw_geometries_one_rotation([obj._mesh, pc_free, pc_occupied, pc_sdf])
-
 
     gt_tf = pk.Transform3d(pos=torch.randn(3, device=d), rot=pk.random_rotation(device=d), device=d)
     positions = gt_tf.transform_points(positions_obj_frame)
@@ -122,7 +122,8 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
         # only plotting the transformed known SDF points for clarity
         pc_free.points = o3d.utility.Vector3dVector(pts_free.cpu())
         pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu())
-        print(f"visualize the transformed object mesh, free space points, and known SDF points (press Q or the close window button to move on)")
+        print(
+            f"visualize the transformed object mesh, free space points, and known SDF points (press Q or the close window button to move on)")
         draw_geometries_one_rotation([tf_mesh, pc_free, pc_sdf])
 
     def visualize_transforms(link_to_world):
@@ -138,7 +139,22 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
 
             draw_geometries_one_rotation(geo)
 
-    registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, free_voxels_resolution=0.005)
+    registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, do_qd=True)
+    if visualize:
+        # visualize the model points (in model frame)
+        interior_pts = registration.volumetric_cost.model_interior_points_orig
+        if interior_pts is not None:
+            pc_interior = o3d.geometry.PointCloud()
+            pc_interior.points = o3d.utility.Vector3dVector(interior_pts.cpu().numpy())
+            pc_interior.paint_uniform_color([0, 0, 1])
+
+            all_pts = registration.volumetric_cost.model_all_points
+            pc_all = o3d.geometry.PointCloud()
+            pc_all.points = o3d.utility.Vector3dVector(all_pts.cpu().numpy())
+            pc_all.paint_uniform_color([0, 1, 0])
+
+            draw_geometries_one_rotation([pc_all, pc_interior])
+
     # with no initial transform guess (starts guesses with random rotations at the origin)
     # we want a set of 30 transforms
     random_init_tsf = pk.Transform3d(pos=torch.randn((B, 3), device=d), rot=pk.random_rotations(B, device=d), device=d)
@@ -159,11 +175,16 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
             res, all_solutions = registration.register(initial_tsf=world_to_link, batch=B,
                                                        low_cost_transform_set=all_solutions)
             print(f"registration took {timer() - start} seconds")
+            # print the RMSE for each cost type
 
             world_to_link = chsel.solution_to_world_to_link_matrix(res)
             link_to_world = world_to_link.inverse()
             # print sorted rmse
             print(torch.sort(res.rmse))
+            fl = registration.debug_last_cost_call().get('unscaled_known_free_space_loss')
+            sl = registration.debug_last_cost_call().get('unscaled_known_sdf_loss')
+            ol = registration.debug_last_cost_call().get('unscaled_known_occ_loss')
+            print(f"free space loss {fl} \nsdf loss {sl} \nocc loss {ol}")
             visualize_transforms(link_to_world)
 
             # reinitialize world_to_link around elites
@@ -221,8 +242,7 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
     # manually do single step registrations (iterations=1 essentially)
 
 
-
-def test_chsel_on_drill(rng_seed=3):
+def test_chsel_on_drill(rng_seed=1):
     seed(rng_seed)
     # supposing we have an object mesh (most formats supported) - from https://github.com/eleramp/pybullet-object-models
     obj = pv.MeshObjectFactory(os.path.join(TEST_DIR, "YcbPowerDrill/textured_simple_reoriented.obj"))
@@ -231,9 +251,9 @@ def test_chsel_on_drill(rng_seed=3):
     # get some points in a grid in the object frame (can get points through other means)
     # this is only around one part of the object to simulate the local nature of contacts
     query_range = np.array([
-        [0.04, 0.15],
-        [0.04, 0.15],
-        [0.1, 0.25],
+        [0.01, 0.15],
+        [0.01, 0.15],
+        [0.05, 0.2],
     ])
 
     coords, pts = pv.get_coordinates_and_points_in_grid(0.005, query_range, device=d)
@@ -249,7 +269,7 @@ def test_chsel_on_drill(rng_seed=3):
     known_sdf = ~known_free & ~known_occupied
 
     # randomly downsample (we randomly permutated before) to simulate getting partial observations
-    N = 100
+    N = 200
 
     # group and stack the points together
     # note that it will still work even if you don't have all 3 or even 2 classes
@@ -270,7 +290,8 @@ def test_chsel_on_drill(rng_seed=3):
 
 if __name__ == "__main__":
     rng_seed = int(sys.argv[1]) if len(sys.argv) > 1 else 3
-    print(f"Using random seed {rng_seed}; try running with different seeds to see different results with\npython tests/test_wrapper.py <seed>")
+    print(
+        f"Using random seed {rng_seed}; try running with different seeds to see different results with\npython tests/test_wrapper.py <seed>")
     if not torch.cuda.is_available():
         print("Warning: CUDA not available, running on CPU which may be much slower")
     test_chsel_on_drill(rng_seed)
