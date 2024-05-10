@@ -1,6 +1,6 @@
 [project]
 name = "chsel"
-version = "0.1.4"
+version = "0.2.0"
 description = "Constrained pose Hypothesis Set Elimination official code for pose estimation"
 readme = "README.md" # Optional
 
