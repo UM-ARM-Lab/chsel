@@ -70,7 +70,9 @@ class SE2Measure(MeasureFunction):
         self.origin = self.axis_of_rotation * self.offset_along_axis
         self.axis_u, self.axis_v = construct_plane_basis(self.axis_of_rotation)
 
-        super().__init__(*args, dtype=self.axis_of_rotation.dtype, device=self.axis_of_rotation.device, **kwargs)
+        super().__init__(*args, **kwargs)
+        self.dtype = self.axis_of_rotation.dtype
+        self.device = self.axis_of_rotation.device
 
     def get_numpy_x(self, R, T):
         # projection of rotation down to axis of rotation
@@ -88,6 +90,20 @@ class SE2Measure(MeasureFunction):
         R = pk.axis_and_angle_to_matrix_33(self.axis_of_rotation, x[..., 0])
         T = uv_to_xyz(x[..., 1:], self.origin, self.axis_u, self.axis_v)
         return R, T
+
+
+class SE2PositionMeasure(SE2Measure):
+    def __init__(self, *args, **kwargs):
+        super().__init__(2, *args, **kwargs)
+
+    def __call__(self, x):
+        return x[..., 1:]
+
+    def grad(self, x):
+        grad = np.zeros((2, x.shape[-1]))
+        grad[:, 1:] = np.eye(2)
+        grad = np.tile(grad, (x.shape[0], 1, 1))
+        return grad
 
 
 class SE2AngleMeasure(SE2Measure):
