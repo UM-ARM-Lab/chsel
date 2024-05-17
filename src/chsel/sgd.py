@@ -150,7 +150,7 @@ def volumetric_registration_sgd(
             logger.info(rmse_msg)
 
         # check for convergence
-        if (relative_rmse <= relative_rmse_thr).all():
+        if relative_rmse.mean() <= relative_rmse_thr:
             converged = True
             break
 
@@ -257,8 +257,6 @@ def volumetric_points_alignment(
     if save_loss_plot:
         plot_sgd_losses(losses)
 
-    if verbose:
-        print(f"pose loss {total_loss.mean().item()}")
     R, T = get_usable_transform_representation()
     return SimilarityTransform(R.detach().clone(), T.detach().clone(),
                                s.detach().clone()), total_loss.detach().clone()
