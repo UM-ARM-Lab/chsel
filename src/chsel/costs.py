@@ -154,10 +154,17 @@ class OccupiedLookupCost(torch.autograd.Function):
 class KnownSDFLookupCost(torch.autograd.Function):
     @staticmethod
     def forward(ctx: Any, sdf: pv.ObjectFrameSDF, model_frame_positions: torch.tensor,
-                expected_sdf_values: torch.tensor) -> torch.tensor:
+                expected_sdf_values: torch.tensor, diff_tolerance=0) -> torch.tensor:
         # should be fast since they should be in cache
         sdf_value, sdf_grad = sdf(model_frame_positions)
         diff = sdf_value - expected_sdf_values
+
+        # allow for up to diff_tolerance of diff
+        if diff_tolerance > 0:
+            pos = diff > 0
+            diff[pos] = torch.clamp(diff[pos] - diff_tolerance, min=0)
+            diff[~pos] = torch.clamp(diff[~pos] + diff_tolerance, max=0)
+
         # interior points will have sdf_value < 0
         ctx.save_for_backward(diff, sdf_grad)
         # return Batch x Points shape; caller should sum over points
@@ -169,13 +176,14 @@ class KnownSDFLookupCost(torch.autograd.Function):
         dl_dsdf = None
         dl_dx = None
         dl_dv = None
+        dl_thresh = None
         if ctx.needs_input_grad[1]:
             diff, sdf_grad = ctx.saved_tensors
             grads = sdf_grad * diff.unsqueeze(-1)
             dl_dx = grad_outputs[:, :, None] * grads
 
         # gradients for the other inputs not implemented
-        return dl_dsdf, dl_dx, dl_dv
+        return dl_dsdf, dl_dx, dl_dv, dl_thresh
 
 
 class KnownSDFVoxelDiffCost:
@@ -500,12 +508,17 @@ class VolumetricCost(RegistrationCost):
 class VolumetricDirectSDFCost(VolumetricCost):
     """Use SDF queries for the known SDF points instead of using cached grads"""
 
+    def __init__(self, *args, known_sdf_tolerance=0., **kwargs):
+        self.known_sdf_tolerance = known_sdf_tolerance
+        super().__init__(*args, **kwargs)
+
     def _cost_sdf(self, R, T, s):
         world_frame_known_sdf_voxels, known_sdf_values = self.sdf_voxels.get_known_pos_and_values()
         known_sdf_model_frame = self._transform_world_frame_points_to_model_frame(R, T, s,
                                                                                   world_frame_known_sdf_voxels)
 
-        known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values)
+        known_sdf_loss = KnownSDFLookupCost.apply(self.sdf, known_sdf_model_frame, known_sdf_values,
+                                                  self.known_sdf_tolerance)
         known_sdf_loss_per_tf = known_sdf_loss.sum(dim=-1)
         self._last_call_info["unscaled_known_sdf_loss"] = known_sdf_loss_per_tf
         self._last_call_info["per_point_sdf_loss"] = known_sdf_loss
