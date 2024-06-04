@@ -311,6 +311,12 @@ class VolumetricCost(RegistrationCost):
         self.model_interior_weights, self.model_interior_normals_orig = self.sdf(self.model_interior_points_orig)
         self.model_interior_weights *= -1
 
+        # for some reason the above filtering query can sometimes be wrong
+        valid = self.model_interior_weights > 0
+        self.model_interior_points_orig = self.model_interior_points_orig[valid]
+        self.model_interior_normals_orig = self.model_interior_normals_orig[valid]
+        self.model_interior_weights = self.model_interior_weights[valid]
+
         self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < self.surface_threshold,
                                                              voxels=query_voxel_grid)
         self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points)
