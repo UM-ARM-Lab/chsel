@@ -55,9 +55,9 @@ def find_orthogonal_vector(v):
 
 def construct_plane_basis(normal):
     """Constructs a basis (two orthogonal unit vectors) for the plane given the plane normal."""
-    axis_u = torch.cross(normal, find_orthogonal_vector(normal))
+    axis_u = torch.linalg.cross(normal, find_orthogonal_vector(normal))
     axis_u /= torch.linalg.norm(axis_u)
-    axis_v = torch.cross(normal, axis_u)
+    axis_v = torch.linalg.cross(normal, axis_u)
     return axis_u, axis_v
 
 
