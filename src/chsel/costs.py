@@ -229,6 +229,7 @@ class VolumetricCost(RegistrationCost):
     def __init__(self, free_voxels: pv.Voxels, sdf_voxels: pv.Voxels,
                  obj_sdf: pv.ObjectFrameSDF,
                  surface_threshold=0.01,
+                 surface_threshold_model_override=None,
                  occ_voxels: pv.Voxels = None,
                  # cost scales
                  scale=1, scale_known_freespace=1., scale_known_sdf=1., scale_known_occ=0,
@@ -261,6 +262,8 @@ class VolumetricCost(RegistrationCost):
         # SDF gives us a volumetric representation of the target object
         self.sdf = obj_sdf
         self.surface_threshold = surface_threshold
+        # distance to use for object model interior points - if not provided, uses the surface threshold
+        self.surface_threshold_model_override = surface_threshold_model_override if surface_threshold is not None else surface_threshold
 
         # batch
         self.B = None
@@ -296,10 +299,11 @@ class VolumetricCost(RegistrationCost):
     def init_model_points(self, query_voxel_grid):
         # ---- for +, known free space points, we just have to care about interior points of the object
         # to facilitate comparison between volumes that are rotated, we sample points at the center of the object voxels
-        interior_threshold = -self.surface_threshold
+        surface_threshold = self.surface_threshold_model_override
+        interior_threshold = -surface_threshold
         bb = self.sdf.surface_bounding_box(padding=0.1).cpu().numpy()
         if query_voxel_grid is None:
-            query_voxel_grid = pv.VoxelGrid(self.surface_threshold or 0.01,
+            query_voxel_grid = pv.VoxelGrid(surface_threshold or 0.01,
                                             bb,
                                             dtype=self.dtype, device=self.device)
 
@@ -317,14 +321,14 @@ class VolumetricCost(RegistrationCost):
         self.model_interior_normals_orig = self.model_interior_normals_orig[valid]
         self.model_interior_weights = self.model_interior_weights[valid]
 
-        self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < self.surface_threshold,
+        self.model_all_points = self.sdf.get_filtered_points(lambda voxel_sdf: voxel_sdf < surface_threshold,
                                                              voxels=query_voxel_grid)
         self.model_all_weights, self.model_all_normals = self.sdf(self.model_all_points)
 
         if self.model_interior_points_orig.shape[0] < 25:
             logger.warning(
                 f"Only {self.model_interior_points_orig.shape[0]} interior points for the model; consider decreasing "
-                f"the surface threshold {self.surface_threshold} such as by decreasing resolution; "
+                f"the surface threshold {surface_threshold} such as by decreasing resolution; "
                 f"the object bounding box is {bb}")
         if self.model_interior_points_orig.shape[0] == self.model_all_points.shape[0]:
             raise RuntimeError("The voxelgrid to query points is too small and only interior points have been "
