@@ -263,7 +263,7 @@ class VolumetricCost(RegistrationCost):
         self.sdf = obj_sdf
         self.surface_threshold = surface_threshold
         # distance to use for object model interior points - if not provided, uses the surface threshold
-        self.surface_threshold_model_override = surface_threshold_model_override if surface_threshold is not None else surface_threshold
+        self.surface_threshold_model_override = surface_threshold_model_override if surface_threshold_model_override is not None else surface_threshold
 
         # batch
         self.B = None
