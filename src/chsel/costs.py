@@ -69,9 +69,9 @@ class FreeSpaceVoxelDiffCost(torch.autograd.Function):
             world_frame_interior_gradients, interior_point_weights = ctx.saved_tensors
             # SDF grads point away from the surface; in this case we want to move the surface away from the occupied
             # free space point, so the surface needs to go in the opposite direction
-            grads = ctx.occupied[:, :, None] * world_frame_interior_gradients * interior_point_weights[None, :, None]
+            grads = ctx.occupied.unsqueeze(-1) * world_frame_interior_gradients * interior_point_weights.unsqueeze(-1)
             # TODO consider averaging the gradients out across all points?
-            dl_dpts = grad_outputs[:, None, None] * grads
+            dl_dpts = grad_outputs.unsqueeze(-1).unsqueeze(-1) * grads
 
         # gradients for the other inputs not implemented
         return dl_dpts, dl_dgrad, dl_dweights, dl_dvoxels
@@ -111,7 +111,7 @@ class FreeSpaceLookupCost(torch.autograd.Function):
             grads = torch.zeros(list(violating.shape) + [3], dtype=grad_outputs.dtype, device=grad_outputs.device)
             # free space point, so the surface needs to go in the opposite direction
             grads[violating] = violation.unsqueeze(-1) * sdf_grad
-            dl_dvoxels = grad_outputs[:, :, None] * -grads
+            dl_dvoxels = grad_outputs.unsqueeze(-1) * -grads
 
         # gradients for the other inputs not implemented
         return dl_dsdf, dl_dvoxels, dl_dthreshold
@@ -180,7 +180,7 @@ class KnownSDFLookupCost(torch.autograd.Function):
         if ctx.needs_input_grad[1]:
             diff, sdf_grad = ctx.saved_tensors
             grads = sdf_grad * diff.unsqueeze(-1)
-            dl_dx = grad_outputs[:, :, None] * grads
+            dl_dx = grad_outputs.unsqueeze(-1) * grads
 
         # gradients for the other inputs not implemented
         return dl_dsdf, dl_dx, dl_dv, dl_thresh
