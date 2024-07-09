@@ -223,17 +223,27 @@ class CHSEL:
                 known_sdf_values = torch.zeros(len(known_sdf_positions), dtype=self.dtype, device=self.device)
             self.volumetric_cost.sdf_voxels[known_sdf_positions] = known_sdf_values
 
-    def reset_free_points(self, still_free_points):
-        # don't touch the other semantics
-        untouched_semantics = self.semantics[~self._free]
-        positions = [self.positions[~self._free], still_free_points]
-        semantics = [untouched_semantics, torch.ones(len(still_free_points), dtype=torch.long,
-                                                     device=self.device) * chsel.SemanticsClass.FREE.value]
-
+    def reset_points(self, surface_pts=None, free_pts=None, occupied_pts=None, do_sync=True):
+        positions = []
+        semantics = []
+        if surface_pts is not None:
+            semantics.append(
+                torch.ones(len(surface_pts), dtype=torch.long, device=self.device) * chsel.SemanticsClass.SURFACE.value)
+            positions.append(surface_pts)
+        if free_pts is not None:
+            semantics.append(
+                torch.ones(len(free_pts), dtype=torch.long, device=self.device) * chsel.SemanticsClass.FREE.value)
+            positions.append(free_pts)
+        if occupied_pts is not None:
+            semantics.append(torch.ones(len(occupied_pts), dtype=torch.long,
+                                        device=self.device) * chsel.SemanticsClass.OCCUPIED.value)
+            positions.append(occupied_pts)
         self.positions = torch.cat(positions)
         self.semantics = torch.cat(semantics).reshape(-1)
-        self._build_semantic_indices()
-        self._sync_free_points()
+        if do_sync:
+            self._build_semantic_indices()
+            self._sync_sdf_points()
+            self._sync_free_points()
 
     def remove_duplicate_points(self, duplicate_distance=None, range_per_dim=None):
         if duplicate_distance is None:
@@ -258,8 +268,8 @@ class CHSEL:
             all_sem.append(torch.ones(len(pts), dtype=torch.long, device=self.device) * s.value)
         self.positions = torch.cat(all_pts)
         self.semantics = torch.cat(all_sem).reshape(-1)
-        self._build_semantic_indices()
 
+        self._build_semantic_indices()
         self._sync_sdf_points()
         self._sync_free_points()
 
