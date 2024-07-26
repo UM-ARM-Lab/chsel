@@ -33,7 +33,10 @@ def ensure_tensor(device, dtype, *args):
 class CHSEL:
     def __init__(self,
                  obj_sdf: pv.ObjectFrameSDF,
-                 positions: torch.tensor, semantics: Sequence[types.Semantics],
+                 # positions and semantics given directly
+                 positions: torch.tensor,
+                 semantics: Sequence[types.Semantics],
+                 # positions with semantics given individually
                  resolution=None,
                  known_sdf_values: Optional[torch.tensor] = None,
                  cost=costs.VolumetricDirectSDFCost,
@@ -142,6 +145,7 @@ class CHSEL:
                                                 dtype=self.dtype,
                                                 device=self.device)
             free_voxels[positions[self._free]] = 1
+            free_voxels.resize_to_fit()
         # extract the known occupied voxels from the given occupied points
         if occupied_voxels is None:
             occupied_voxels = pv.ExpandingVoxelGrid(occupied_voxels_resolution or self.resolution,
@@ -285,6 +289,7 @@ class CHSEL:
                                                                  [(0, 0) for _ in range(3)], dtype=self.dtype,
                                                                  device=self.device)
         self.volumetric_cost.free_voxels[self.positions[self._free]] = 1
+        self.volumetric_cost.free_voxels.resize_to_fit()
 
     def _sync_sdf_points(self):
         known_sdf_positions = self.positions[self._known]
