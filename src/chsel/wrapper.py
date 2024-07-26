@@ -34,9 +34,13 @@ class CHSEL:
     def __init__(self,
                  obj_sdf: pv.ObjectFrameSDF,
                  # positions and semantics given directly
-                 positions: torch.tensor,
-                 semantics: Sequence[types.Semantics],
+                 positions: torch.tensor = None,
+                 semantics: Sequence[types.Semantics] = None,
                  # positions with semantics given individually
+                 free_pts=None,
+                 surface_pts=None,
+                 occupied_pts=None,
+                 # other parameters
                  resolution=None,
                  known_sdf_values: Optional[torch.tensor] = None,
                  cost=costs.VolumetricDirectSDFCost,
@@ -64,8 +68,12 @@ class CHSEL:
         """
 
         :param obj_sdf: Object centered signed distance field (SDF)
-        :param positions: World frame positions of the observed points
+        :param positions: World frame positions of the observed points; either this has to be given with semantics, or
+            the free, surface, and occupied points have to be given separately
         :param semantics: Semantics of the observed points
+        :param free_pts: (optional) World frame positions of the free points
+        :param surface_pts: (optional) World frame positions of the surface points
+        :param occupied_pts: (optional) World frame positions of the occupied points
         :param resolution: Resolution in meters of the side-length of each voxel; this controls what points
         are considered duplicates and removed when calling remove_duplicate_points(); if None is given, it will be
         chosen such that there are at least 20 voxels per dimension of the object
@@ -110,10 +118,13 @@ class CHSEL:
         self.dtype = positions.dtype
         self.device = positions.device
 
-        self.positions = positions
-        # to allow batch indexing
-        # store their numeric values rather than enum for better operations
-        self.semantics = ensure_tensor(self.device, torch.long, semantics)
+        if positions is None:
+            self.reset_points(surface_pts=surface_pts, free_pts=free_pts, occupied_pts=occupied_pts, do_sync=False)
+        else:
+            self.positions = positions
+            # to allow batch indexing
+            # store their numeric values rather than enum for better operations
+            self.semantics = ensure_tensor(self.device, torch.long, semantics)
 
         self.debug = debug
         self.archive_range_sigma = archive_range_sigma
