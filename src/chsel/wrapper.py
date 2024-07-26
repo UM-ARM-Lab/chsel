@@ -403,6 +403,84 @@ class CHSEL:
 
         return res, self.qd.get_all_elite_solutions()
 
+    def visualize_input(self, show_model_points=True, show_input_points=True,
+                        show_free_voxels=True, show_all_free_voxels=False,
+                        gt_obj_to_world_tf: pk.Transform3d = None):
+        """View the input points and the object SDF to check if resolutions are appropriate"""
+        import open3d as o3d
+
+        to_vis = []
+        if show_model_points:
+            # visualize the model points (in model frame)
+            interior_pts = self.volumetric_cost.model_interior_points_orig
+            # transform to world frame if given a ground truth transform
+            if gt_obj_to_world_tf is not None:
+                interior_pts = gt_obj_to_world_tf.transform_points(interior_pts)
+            else:
+                logger.warning("No ground truth transform given, visualizing model points in object frame")
+            pc_interior = o3d.geometry.PointCloud()
+            pc_interior.points = o3d.utility.Vector3dVector(interior_pts.cpu().numpy())
+            pc_interior.paint_uniform_color([0, 0, 1])
+
+            all_pts = self.volumetric_cost.model_all_points
+            if gt_obj_to_world_tf is not None:
+                all_pts = gt_obj_to_world_tf.transform_points(all_pts)
+            pc_all = o3d.geometry.PointCloud()
+            pc_all.points = o3d.utility.Vector3dVector(all_pts.cpu().numpy())
+            pc_all.paint_uniform_color([0, 1, 0])
+
+            model_pts = [pc_all, pc_interior]
+            to_vis.extend(model_pts)
+            # o3d.visualization.draw_geometries(model_pts)
+
+        if show_input_points:
+            # visualize data
+            _free = torch.tensor([s == chsel.SemanticsClass.FREE for s in self.semantics])
+            _occupied = torch.tensor([s == chsel.SemanticsClass.OCCUPIED for s in self.semantics])
+            _known = ~_free & ~_occupied
+
+            positions_obj_frame = self.positions
+
+            # look at the free voxel centers instead of the points
+            if show_free_voxels:
+                pts, occupancy = self.volumetric_cost.free_voxels.get_known_pos_and_values()
+                pts_free = pts[occupancy.reshape(-1) == 1]
+            else:
+                pts_free = positions_obj_frame[_free]
+            pts_occupied = positions_obj_frame[_occupied]
+            pts_sdf = positions_obj_frame[_known]
+            # plot object and points
+            # have to convert the pts to o3d point cloud
+            pc_free = o3d.geometry.PointCloud()
+            pc_free.points = o3d.utility.Vector3dVector(pts_free.cpu().numpy())
+            pc_free.paint_uniform_color([1, 0.706, 0])
+
+            pc_occupied = o3d.geometry.PointCloud()
+            pc_occupied.points = o3d.utility.Vector3dVector(pts_occupied.cpu().numpy())
+            pc_occupied.paint_uniform_color([0, 0.4, 0])
+
+            pc_sdf = o3d.geometry.PointCloud()
+            pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu().numpy())
+            pc_sdf.paint_uniform_color([1, 0., 0])
+
+            input_points = [pc_free, pc_occupied, pc_sdf]
+            vx = self.volumetric_cost.free_voxels
+            if show_all_free_voxels and isinstance(vx, pv.VoxelGrid):
+                unknown = vx.voxels.raw_data == vx.invalid_val
+                indices = unknown.nonzero()
+                # these points are in object frame
+                pts_not_free = vx.voxels.ensure_value_key(indices)
+                pc_not_free = o3d.geometry.PointCloud()
+                pc_not_free.points = o3d.utility.Vector3dVector(pts_not_free.cpu().numpy())
+                pc_not_free.paint_uniform_color([0, 0.706, 1])
+                input_points.append(pc_not_free)
+            to_vis.extend(input_points)
+
+        if len(to_vis):
+            print(
+                f"visualize object mesh, free space points (orange), and known SDF points (blue) (press Q or the close window button to move on)")
+            o3d.visualization.draw_geometries(to_vis)
+
 
 def init_random_transform_with_given_init(m, batch, dtype, device, initial_tsf=None, axis_of_rotation=None):
     # apply some random initial poses
