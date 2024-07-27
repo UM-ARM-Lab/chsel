@@ -7,5 +7,5 @@ try:
 except ImportError:
     WindowRecorder = nullcontext
 
-with WindowRecorder([sys.argv[1]]):
+with WindowRecorder([sys.argv[1]], save_dir="."):
     time.sleep(float(sys.argv[2]))

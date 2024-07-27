@@ -86,135 +86,50 @@ Note that you don't need points from each semantics, but the more information yo
 For example, you can use CHSEL even with only known surface points. In this case CHSEL will
 behave similarly to ICP.
 
+Easy way to initialize registration (assuming you have observed world-frame points):
 ```python
-import numpy as np
-import torch
 import chsel
-from pytorch_seed import seed
+# can specify None for any of the classes if you don't have them
+registration = chsel.CHSEL(sdf, surface_pts=surface_pts, free_pts=free_pts, occupied_pts=None)
+```
 
-# get some points in a grid in the object frame (can get points through other means)
-# this is only around one part of the object to simulate the local nature of contacts
-query_range = np.array([
-    [0.04, 0.15],
-    [0.04, 0.15],
-    [0.1, 0.25],
-])
-
-# use CUDA to accelerate if available
-d = "cuda" if torch.cuda.is_available() else "cpu"
-# seed the RNG for reproducibility
-seed(1)
-
-coords, pts = pv.get_coordinates_and_points_in_grid(0.005, query_range, device=d)
-
-# randomly permute points so they are not in order
-pts = pts[torch.randperm(len(pts))]
-
-sdf_val, sdf_grad = sdf(pts)
-# assuming we only observe surface points, set thresholds for known free and known occupied
-# note that this is the most common case, but you can know non-zero (non-surface) SDF values
-known_free = sdf_val > 0.005
-known_occupied = sdf_val < -0.005
-known_sdf = ~known_free & ~known_occupied
-
-# randomly downsample (we randomly permutated before) to simulate getting partial observations
-N = 100
-
-# group and stack the points together
-# note that it will still work even if you don't have all 3 or even 2 classes
-# for example with only known surface points, it degenerates to a form of ICP
-# we also don't need balanced data from each class
-pts_free = pts[known_free][:N]
-pts_occupied = pts[known_occupied][:N]
-pts_sdf = pts[known_sdf][:N]
+Alternatively you can specify the points and semantics directly
+```python
+import chsel
+...
 sem_free = [chsel.SemanticsClass.FREE for _ in pts_free]
 sem_occupied = [chsel.SemanticsClass.OCCUPIED for _ in pts_occupied]
+# lookup the SDF value of the points
 sem_sdf = sdf_val[known_sdf][:N]
-
 positions = torch.cat((pts_free, pts_occupied, pts_sdf))
 semantics = sem_free + sem_occupied + sem_sdf.tolist()
+registration = chsel.CHSEL(sdf, positions=positions, semantics=semantics)
 ```
 
-You can visualize the points with open3d. Orange points are
-known free, blue points are known SDF, and green points (inside the object)
-are known occupied.
+First you might want to visualize the object interior and surface points to ensure resolutions are fine (need open3d).
+Surface points are in green, interior points are in blue. You can adjust them via the `CHSEL` constructor arguments 
+`surface_threshold` and `surface_threshold_model_override`. The default value for them is the `resolution` of the registration.
 ```python
-import open3d as o3d
-
-# plot object and points
-# have to convert the pts to o3d point cloud
-pc_free = o3d.geometry.PointCloud()
-pc_free.points = o3d.utility.Vector3dVector(pts_free.numpy())
-pc_free.paint_uniform_color([1, 0.706, 0])
-
-pc_occupied = o3d.geometry.PointCloud()
-pc_occupied.points = o3d.utility.Vector3dVector(pts_occupied.numpy())
-pc_occupied.paint_uniform_color([0, 0.706, 0])
-
-pc_sdf = o3d.geometry.PointCloud()
-pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.numpy())
-pc_sdf.paint_uniform_color([0, 0.706, 1])
-
-first_rotate = False
-
-def rotate_view(vis):
-    nonlocal first_rotate
-    ctr = vis.get_view_control()
-    if first_rotate is False:
-        ctr.rotate(0.0, -540.0)
-        first_rotate = True
-    ctr.rotate(5.0, 0.0)
-    return False
-
-o3d.visualization.draw_geometries_with_animation_callback([obj._mesh, pc_free, pc_occupied, pc_sdf], rotate_view)
+registration.visualize_input(show_model_points=True, show_input_points=False)
 ```
+![model points](https://i.imgur.com/edRkUog.gif)
+
+You can also visualize the observed input points together with the model points.
+For them to show up in the same frame, you need the ground truth transform.
+Orange points are known free, red points are surface, dark green is occupied.
+```python
+registration.visualize_input(show_model_points=True, show_input_points=True, gt_obj_to_world_tf=gt_tf)
+```
+![model and input points](https://i.imgur.com/DD8zSkR.gif)
+
+Also visualized with the object mesh
 
 ![points](https://i.imgur.com/GpQf0w1.gif)
-
-We transform those points from object frame to some random world frame
-```python
-import pytorch_kinematics as pk
-
-gt_tf = pk.Transform3d(pos=torch.randn(3), rot=pk.random_rotation())
-positions = gt_tf.transform_points(positions)
-```
-
-We can visualize the transform (see `tests/test_wrapper.py` for more detail)
-```python
-# plot object and points
-# have to convert the pts to o3d point cloud
-pc_free = o3d.geometry.PointCloud()
-pc_free.points = o3d.utility.Vector3dVector(pts_free.cpu().numpy())
-pc_free.paint_uniform_color([1, 0.706, 0])
-
-pc_occupied = o3d.geometry.PointCloud()
-pc_occupied.points = o3d.utility.Vector3dVector(pts_occupied.cpu().numpy())
-pc_occupied.paint_uniform_color([0, 0.706, 0])
-
-pc_sdf = o3d.geometry.PointCloud()
-pc_sdf.points = o3d.utility.Vector3dVector(pts_sdf.cpu().numpy())
-pc_sdf.paint_uniform_color([0, 0.706, 1])
-
-o3d.visualization.draw_geometries_with_animation_callback([obj._mesh, pc_free, pc_occupied, pc_sdf],
-                                                          rotate_view)
-
-# plot the transformed mesh and points
-link_to_world_gt = gt_tf.get_matrix()[0]
-tf_mesh = copy.deepcopy(obj._mesh).transform(link_to_world_gt.cpu().numpy())
-
-# only plotting the transformed known SDF points for clarity
-pc_free.points = o3d.utility.Vector3dVector(positions[:N].cpu())
-pc_sdf.points = o3d.utility.Vector3dVector(positions[2 * N:].cpu())
-o3d.visualization.draw_geometries_with_animation_callback([tf_mesh, pc_free, pc_sdf], rotate_view)
-```
-
-![transformed points](https://i.imgur.com/aS8oaZO.gif)
 
 
 We now apply CHSEL for some iterations with an initial random guesses of the transform
 ```python
-import chsel
-registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, free_voxels_resolution=0.005)
+import pytorch_kinematics as pk
 # we want a set of 30 transforms
 B = 30
 
