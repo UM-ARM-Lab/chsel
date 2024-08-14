@@ -163,6 +163,7 @@ class CHSEL:
                                                     [(0, 0) for _ in range(3)],
                                                     dtype=self.dtype, device=self.device)
             occupied_voxels[positions[self._occupied]] = 1
+            occupied_voxels.resize_to_fit()
         # extract the known SDF points
         if known_sdf_voxels is None:
             if known_sdf_values is None:
