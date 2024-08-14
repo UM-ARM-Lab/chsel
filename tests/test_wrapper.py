@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO, force=True,
                     format='[%(levelname)s %(asctime)s %(pathname)s:%(lineno)d] %(message)s',
                     datefmt='%m-%d %H:%M:%S')
 
-visualize = True
+visualize = False
 visualize_after_each_iteration = True
 compare_against_icp = True
 # number of transforms to estimate at one time
@@ -140,6 +140,14 @@ def test_chsel_on_obj(obj, sdf, positions_obj_frame, semantics):
             draw_geometries_one_rotation(geo)
 
     registration = chsel.CHSEL(sdf, positions, semantics, qd_iterations=100, do_qd=True)
+    registration.visualize_input(gt_obj_to_world_tf=gt_tf, show_all_free_voxels=True, show_model_points=True,
+                                 show_input_points=False)
+    # registration.visualize_input(gt_obj_to_world_tf=gt_tf, show_all_free_voxels=False, show_model_points=False,
+    #                              show_input_points=True)
+    registration.visualize_input(gt_obj_to_world_tf=gt_tf, show_all_free_voxels=False, show_model_points=True,
+                                 show_input_points=True)
+    # registration.visualize_input(gt_obj_to_world_tf=gt_tf, show_all_free_voxels=False)
+
     if visualize:
         # visualize the model points (in model frame)
         interior_pts = registration.volumetric_cost.model_interior_points_orig
